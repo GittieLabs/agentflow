@@ -1,0 +1,177 @@
+"""
+Google Gemini LLM provider.
+
+Wraps the google-genai SDK to implement the LLMProvider protocol.
+Handles translation between agentflow types and Gemini's contents/parts format.
+
+Gemini differences from Anthropic/OpenAI:
+- Uses "model" role instead of "assistant"
+- Content is structured as parts: [{text: "..."}, {functionCall: ...}]
+- Tool definitions use "function_declarations" instead of tool schemas
+- System instruction is a separate config parameter, not a message
+"""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from agentflow.types import AgentResponse, Message, Role, ToolCall
+
+logger = logging.getLogger("agentflow.providers.google_genai")
+
+try:
+    from google import genai
+    from google.genai import types as genai_types
+except ImportError:
+    genai = None  # type: ignore[assignment]
+    genai_types = None  # type: ignore[assignment]
+
+
+class GoogleGenAIProvider:
+    """
+    LLMProvider implementation for Google Gemini models.
+
+    Uses the google-genai SDK's async interface.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gemini-2.5-flash-preview",
+    ) -> None:
+        if genai is None:
+            raise ImportError("Install google-genai: pip install agentflow[google]")
+
+        self._client = genai.Client(api_key=api_key)
+        self._model = model
+
+    async def chat(
+        self,
+        messages: list[Message],
+        system: str = "",
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+    ) -> AgentResponse:
+        """Send messages to Gemini and return an AgentResponse."""
+        contents = self._to_api_contents(messages)
+
+        config_kwargs: dict[str, Any] = {
+            "max_output_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if system:
+            config_kwargs["system_instruction"] = system
+
+        config = genai_types.GenerateContentConfig(**config_kwargs)
+
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "contents": contents,
+            "config": config,
+        }
+
+        if tools:
+            kwargs["config"] = genai_types.GenerateContentConfig(
+                **config_kwargs,
+                tools=[self._to_api_tools(tools)],
+            )
+
+        response = await self._client.aio.models.generate_content(**kwargs)
+        return self._from_api_response(response)
+
+    def _to_api_contents(self, messages: list[Message]) -> list[dict[str, Any]]:
+        """Convert agentflow Messages to Gemini contents format."""
+        contents: list[dict[str, Any]] = []
+
+        for msg in messages:
+            if msg.role == Role.SYSTEM:
+                continue  # System is passed via config
+
+            if msg.role == Role.TOOL_RESULT:
+                # Gemini expects function responses as user-role parts
+                parts = []
+                for tr in msg.tool_results:
+                    parts.append({
+                        "function_response": {
+                            "name": tr.tool_call_id,  # Gemini uses name, not ID
+                            "response": {"result": tr.content},
+                        }
+                    })
+                contents.append({"role": "user", "parts": parts})
+
+            elif msg.role == Role.ASSISTANT:
+                parts: list[dict[str, Any]] = []
+                if msg.content:
+                    parts.append({"text": msg.content})
+                for tc in msg.tool_calls:
+                    parts.append({
+                        "function_call": {
+                            "name": tc.name,
+                            "args": tc.input,
+                        }
+                    })
+                contents.append({"role": "model", "parts": parts})
+
+            elif msg.role == Role.USER:
+                contents.append({
+                    "role": "user",
+                    "parts": [{"text": msg.content}],
+                })
+
+        return contents
+
+    def _to_api_tools(self, tools: list[dict[str, Any]]) -> dict[str, Any]:
+        """Convert agentflow tool definitions to Gemini function_declarations."""
+        declarations = []
+        for tool in tools:
+            decl: dict[str, Any] = {
+                "name": tool["name"],
+                "description": tool.get("description", ""),
+            }
+            schema = tool.get("input_schema", {})
+            if schema:
+                decl["parameters"] = schema
+            declarations.append(decl)
+
+        return {"function_declarations": declarations}
+
+    def _from_api_response(self, response: Any) -> AgentResponse:
+        """Convert Gemini response to AgentResponse."""
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+
+        # Gemini response has candidates[0].content.parts
+        if response.candidates:
+            candidate = response.candidates[0]
+            if candidate.content and candidate.content.parts:
+                for part in candidate.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        text_parts.append(part.text)
+                    elif hasattr(part, "function_call") and part.function_call:
+                        fc = part.function_call
+                        args = dict(fc.args) if fc.args else {}
+                        tool_calls.append(ToolCall(
+                            id=fc.name,  # Gemini uses name as ID
+                            name=fc.name,
+                            input=args,
+                        ))
+
+        stop_reason = "tool_use" if tool_calls else "end_turn"
+
+        usage = {}
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            um = response.usage_metadata
+            usage = {
+                "input_tokens": getattr(um, "prompt_token_count", 0),
+                "output_tokens": getattr(um, "candidates_token_count", 0),
+            }
+
+        return AgentResponse(
+            text="".join(text_parts),
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+            usage=usage,
+            raw=response,
+        )
