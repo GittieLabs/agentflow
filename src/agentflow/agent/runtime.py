@@ -85,8 +85,16 @@ class AgentExecutor:
         messages = list(history) if history else []
         messages.append(Message(role=Role.USER, content=message))
 
-        # Get tool definitions
-        tool_defs = self._tools.list_tools() if self._tools else None
+        # Get tool definitions, filtered by agent config if specified
+        if self._tools:
+            all_tool_defs = self._tools.list_tools()
+            if self._config.tools:
+                allowed = set(self._config.tools)
+                tool_defs = [t for t in all_tool_defs if t["name"] in allowed]
+            else:
+                tool_defs = all_tool_defs
+        else:
+            tool_defs = None
 
         # Tool-use loop
         for round_num in range(self._config.max_tool_rounds):
@@ -99,11 +107,14 @@ class AgentExecutor:
             )
 
             if response.stop_reason == "tool_use" and response.tool_calls and self._tools:
-                # Add assistant message with tool calls to history
+                # Add assistant message with tool calls to history.
+                # Store raw response so providers (e.g. Gemini thinking models)
+                # can preserve thought_signature when replaying history.
                 messages.append(Message(
                     role=Role.ASSISTANT,
                     content=response.text,
                     tool_calls=response.tool_calls,
+                    metadata={"_raw_response": response.raw},
                 ))
 
                 # Dispatch each tool call
@@ -157,11 +168,18 @@ class AgentExecutor:
                 metadata={"usage": response.usage, "rounds": round_num + 1},
             )
 
-        # Exhausted tool rounds
+        # Exhausted tool rounds — return accumulated tool results instead of an error
         logger.warning("Agent %s exhausted %d tool rounds", self._config.name, self._config.max_tool_rounds)
+        accumulated = []
+        for msg in messages:
+            if msg.role == Role.TOOL_RESULT:
+                for tr in msg.tool_results:
+                    if tr.content and not tr.is_error:
+                        accumulated.append(tr.content)
+        fallback_text = "\n\n".join(accumulated) if accumulated else "No results found."
         return NodeOutput(
             node_id=node_id or "default",
             agent_id=self._config.name,
-            text="I tried to process that but ran into some issues. Can you try rephrasing?",
+            text=fallback_text,
             metadata={"exhausted_rounds": True},
         )

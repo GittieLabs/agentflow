@@ -102,17 +102,30 @@ class GoogleGenAIProvider:
                 contents.append({"role": "user", "parts": parts})
 
             elif msg.role == Role.ASSISTANT:
-                parts: list[dict[str, Any]] = []
-                if msg.content:
-                    parts.append({"text": msg.content})
-                for tc in msg.tool_calls:
-                    parts.append({
-                        "function_call": {
-                            "name": tc.name,
-                            "args": tc.input,
-                        }
-                    })
-                contents.append({"role": "model", "parts": parts})
+                # For Gemini thinking models, preserve the raw candidate content
+                # to keep thought_signature intact. Without this, the API returns
+                # 400 INVALID_ARGUMENT on subsequent turns.
+                raw_response = msg.metadata.get("_raw_response") if msg.metadata else None
+                if (
+                    raw_response is not None
+                    and hasattr(raw_response, "candidates")
+                    and raw_response.candidates
+                    and raw_response.candidates[0].content
+                ):
+                    contents.append(raw_response.candidates[0].content)
+                else:
+                    # Fallback: reconstruct (works for non-thinking models)
+                    parts: list[dict[str, Any]] = []
+                    if msg.content:
+                        parts.append({"text": msg.content})
+                    for tc in msg.tool_calls:
+                        parts.append({
+                            "function_call": {
+                                "name": tc.name,
+                                "args": tc.input,
+                            }
+                        })
+                    contents.append({"role": "model", "parts": parts})
 
             elif msg.role == Role.USER:
                 contents.append({
