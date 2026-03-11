@@ -107,6 +107,8 @@ __all__ = [
     "DAGExecutor",
     "Plan",
     "PlanStep",
+    # Telemetry
+    "LangfuseEventHandler",
     # Memory
     "FileMemory",
     "MemoryManager",
@@ -121,4 +123,12 @@ __all__ = [
     "WorkflowExecutor",
 ]
 
-__version__ = "0.2.0"
+def __getattr__(name: str):
+    """Lazy import for optional telemetry extras to avoid hard import failures."""
+    if name == "LangfuseEventHandler":
+        from agentflow.telemetry import LangfuseEventHandler
+        return LangfuseEventHandler
+    raise AttributeError(f"module 'agentflow' has no attribute {name!r}")
+
+
+__version__ = "0.2.1"
