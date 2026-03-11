@@ -3,16 +3,19 @@ Langfuse observability handler for agentflow EventBus.
 
 Maps agentflow events to the Langfuse trace/span/generation hierarchy:
 
-  WORKFLOW_STARTED     → trace(name=workflow_name)
-  NODE_STARTED         → trace.span(name=node_id)
-  LLM_CALL_COMPLETED   → span.generation(model, usage, latency) — nested under node span
-  TOOL_CALLED          → span.span(name="tool:tool_name")
-  NODE_COMPLETED       → close span
-  WORKFLOW_COMPLETED   → close trace
-  ERROR                → mark span/trace as error
+  WORKFLOW_STARTED     → start_observation(as_type="span") — root trace span
+  NODE_STARTED         → root_span.start_observation(as_type="span")
+  LLM_CALL_COMPLETED   → node_span.start_observation(as_type="generation") — nested LLM call
+  TOOL_CALLED          → node_span.start_observation(as_type="tool") — nested tool call
+  NODE_COMPLETED       → close node span
+  WORKFLOW_COMPLETED   → close root span
+  ERROR                → mark span as error and close
+
+Compatible with Langfuse SDK v4+.
+For Langfuse SDK v2/v3, pin: langfuse>=2.0,<3.0 and use the previous handler.
 
 Requirements:
-    pip install langfuse>=2.0   (or gittielabs-agentflow[telemetry])
+    pip install langfuse>=4.0   (or gittielabs-agentflow[telemetry])
 
 Usage:
     from agentflow.telemetry import LangfuseEventHandler
@@ -53,13 +56,11 @@ class LangfuseEventHandler:
     """EventBus subscriber that creates Langfuse traces from agentflow events.
 
     Span keying strategy:
-    - Traces are keyed by workflow name.
-    - Spans are keyed by node_id (the ``node`` value emitted by NODE_STARTED).
-    - LLM generations are nested under the matching node span (looked up by ``node`` key
-      from LLM_CALL_COMPLETED data). Falls back to the first active trace if no span found.
+    - Root spans (traces) are keyed by workflow name.
+    - Node spans are keyed by node_id (the ``node`` value emitted by NODE_STARTED).
+    - LLM generations and tool spans are children of the matching node span.
 
     Thread safety: not thread-safe; designed for use within a single asyncio event loop.
-    All state lives in plain dicts — fine for asyncio's cooperative multitasking.
     """
 
     def __init__(
@@ -93,9 +94,9 @@ class LangfuseEventHandler:
 
         self._lf = Langfuse(**kwargs)
 
-        # Active objects — keyed by workflow name / node_id
-        self._traces: dict[str, Any] = {}
-        self._spans: dict[str, Any] = {}
+        # Active observations — keyed by workflow name (root spans) / node_id (child spans)
+        self._root_spans: dict[str, Any] = {}   # workflow → root LangfuseSpan
+        self._node_spans: dict[str, Any] = {}   # node_id  → child LangfuseSpan
 
     async def on_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Dispatch an event to the appropriate handler. Errors are caught and logged."""
@@ -121,59 +122,68 @@ class LangfuseEventHandler:
 
     def _handle_workflow_started(self, data: dict[str, Any]) -> None:
         workflow = data.get("workflow", "unknown")
-        trace = self._lf.trace(name=workflow, metadata=data)
-        self._traces[workflow] = trace
-        logger.debug("Langfuse trace created: %s", workflow)
+        # Create a root span — Langfuse v4 treats the first observation as the trace root
+        root_span = self._lf.start_observation(
+            name=workflow,
+            as_type="span",
+            metadata=data,
+        )
+        self._root_spans[workflow] = root_span
+        logger.debug("Langfuse root span created: %s", workflow)
 
     def _handle_workflow_completed(self, data: dict[str, Any]) -> None:
         workflow = data.get("workflow", "unknown")
-        trace = self._traces.pop(workflow, None)
-        if trace:
-            trace.update(
+        root_span = self._root_spans.pop(workflow, None)
+        if root_span:
+            root_span.update(
                 output=data.get("result", ""),
                 metadata={"nodes_completed": data.get("nodes_completed", 0)},
             )
-            logger.debug("Langfuse trace closed: %s", workflow)
+            root_span.end()
+            logger.debug("Langfuse root span closed: %s", workflow)
 
     def _handle_node_started(self, data: dict[str, Any]) -> None:
         node = data.get("node", "unknown")
-        # Find the most recently opened trace to attach this span to
-        trace = next(iter(self._traces.values()), None) if self._traces else None
-        if trace:
-            span = trace.span(name=node, input=data)
-            self._spans[node] = span
-            logger.debug("Langfuse span created: %s", node)
+        # Attach to the most recently opened root span
+        root_span = next(iter(self._root_spans.values()), None)
+        if root_span:
+            node_span = root_span.start_observation(
+                name=node,
+                as_type="span",
+                input=data,
+            )
+            self._node_spans[node] = node_span
+            logger.debug("Langfuse node span created: %s", node)
 
     def _handle_node_completed(self, data: dict[str, Any]) -> None:
         node = data.get("node", "unknown")
-        span = self._spans.pop(node, None)
-        if span:
-            span.end(
+        node_span = self._node_spans.pop(node, None)
+        if node_span:
+            node_span.update(
                 output=data.get("output", ""),
                 metadata={"agent": data.get("agent", "")},
             )
-            logger.debug("Langfuse span closed: %s", node)
+            node_span.end()
+            logger.debug("Langfuse node span closed: %s", node)
 
     def _handle_llm_call_completed(self, data: dict[str, Any]) -> None:
-        """Nest an LLM generation under the appropriate node span.
-
-        Uses the ``node`` key from LLM_CALL_COMPLETED (threaded from AgentExecutor
-        through node_id parameter). Falls back to the first active trace.
-        """
+        """Record an LLM generation nested under the appropriate node span."""
         node = data.get("node") or data.get("agent", "unknown")
-        span = self._spans.get(node)
-        parent = span if span is not None else next(iter(self._traces.values()), None)
-
+        parent = self._node_spans.get(node)
+        if parent is None:
+            # Fall back to root span if node span not found
+            parent = next(iter(self._root_spans.values()), None)
         if parent is None:
             return
 
         input_tokens = data.get("input_tokens", 0)
         output_tokens = data.get("output_tokens", 0)
 
-        parent.generation(
+        gen = parent.start_observation(
             name=f"{data.get('agent', 'llm')}/round-{data.get('round', 0)}",
+            as_type="generation",
             model=data.get("model"),
-            usage={
+            usage_details={
                 "input": input_tokens,
                 "output": output_tokens,
                 "total": input_tokens + output_tokens,
@@ -185,26 +195,33 @@ class LangfuseEventHandler:
                 "tool_calls": data.get("tool_calls", 0),
             },
         )
+        # Generations are point-in-time — end immediately
+        gen.end()
 
     def _handle_tool_called(self, data: dict[str, Any]) -> None:
         node = data.get("node", "unknown")
-        span = self._spans.get(node)
-        if span:
+        node_span = self._node_spans.get(node)
+        if node_span:
             tool_name = data.get("tool", "unknown")
-            span.span(
+            tool_span = node_span.start_observation(
                 name=f"tool:{tool_name}",
+                as_type="tool",
                 input=data.get("input"),
                 metadata={"round": data.get("round")},
             )
+            # Tool spans are fire-and-forget for now — end immediately
+            # (TOOL_RESULT event could be used to close them properly)
+            tool_span.end()
 
     def _handle_error(self, data: dict[str, Any]) -> None:
         node = data.get("node", "unknown")
-        span = self._spans.pop(node, None)
-        if span:
-            span.end(
+        node_span = self._node_spans.pop(node, None)
+        if node_span:
+            node_span.update(
                 level="ERROR",
                 status_message=data.get("error", "unknown error"),
             )
+            node_span.end()
 
     # ─── Lifecycle ───────────────────────────────────────────────────────────
 
