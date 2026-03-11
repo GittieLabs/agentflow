@@ -26,11 +26,23 @@ from agentflow.protocols import (
 )
 from agentflow.agent import AgentExecutor, ContextAssembler, PromptTemplate
 from agentflow.config import AgentConfig, ConfigLoader, RouterConfig, WorkflowConfig
-from agentflow.events import EventBus
+from agentflow.events import (
+    EventBus,
+    LLM_CALL_STARTED,
+    LLM_CALL_COMPLETED,
+    NODE_STARTED,
+    NODE_COMPLETED,
+    TOOL_CALLED,
+    TOOL_RESULT,
+    WORKFLOW_STARTED,
+    WORKFLOW_COMPLETED,
+    ERROR,
+)
 from agentflow.storage import FileSystemStorage, InMemoryStorage, S3Storage
 from agentflow.tools import HTTPToolDispatcher, LocalToolDispatcher, ToolRegistry
 from agentflow.providers import AnthropicProvider, GoogleGenAIProvider, MockLLMProvider, OpenAICompatProvider
-from agentflow.session import ArtifactStore, Scratchpad, Session, SessionManager
+from agentflow.session import ArtifactStore, HistoryPersistence, MultiUserHistory, Scratchpad, Session, SessionManager
+from agentflow.orchestration import ComplexityClassifier, DAGExecutor, Plan, PlanStep
 from agentflow.memory import FileMemory, MemoryManager, VectorMemory
 from agentflow.router import RouterEngine, RoutingResult, RuleEvaluator
 from agentflow.workflow import NodeRunner, WorkflowDAG, WorkflowExecutor
@@ -61,6 +73,15 @@ __all__ = [
     "WorkflowConfig",
     # Events
     "EventBus",
+    "LLM_CALL_STARTED",
+    "LLM_CALL_COMPLETED",
+    "NODE_STARTED",
+    "NODE_COMPLETED",
+    "TOOL_CALLED",
+    "TOOL_RESULT",
+    "WORKFLOW_STARTED",
+    "WORKFLOW_COMPLETED",
+    "ERROR",
     # Storage
     "FileSystemStorage",
     "InMemoryStorage",
@@ -76,9 +97,16 @@ __all__ = [
     "OpenAICompatProvider",
     # Session
     "ArtifactStore",
+    "HistoryPersistence",
+    "MultiUserHistory",
     "Scratchpad",
     "Session",
     "SessionManager",
+    # Orchestration
+    "ComplexityClassifier",
+    "DAGExecutor",
+    "Plan",
+    "PlanStep",
     # Memory
     "FileMemory",
     "MemoryManager",
@@ -93,4 +121,4 @@ __all__ = [
     "WorkflowExecutor",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
