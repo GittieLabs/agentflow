@@ -151,8 +151,14 @@ class GoogleGenAIProvider:
         return {"function_declarations": declarations}
 
     def _from_api_response(self, response: Any) -> AgentResponse:
-        """Convert Gemini response to AgentResponse."""
+        """Convert Gemini response to AgentResponse.
+
+        Separates thinking parts (part.thought == True) from response parts
+        so callers can surface reasoning independently (e.g. as trace events).
+        Thinking text is stored in AgentResponse metadata["thinking"].
+        """
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
 
         # Gemini response has candidates[0].content.parts
@@ -160,7 +166,12 @@ class GoogleGenAIProvider:
             candidate = response.candidates[0]
             if candidate.content and candidate.content.parts:
                 for part in candidate.content.parts:
-                    if hasattr(part, "text") and part.text:
+                    # Thinking models emit thought parts with part.thought == True
+                    is_thought = getattr(part, "thought", False)
+                    if is_thought:
+                        if hasattr(part, "text") and part.text:
+                            thinking_parts.append(part.text)
+                    elif hasattr(part, "text") and part.text:
                         text_parts.append(part.text)
                     elif hasattr(part, "function_call") and part.function_call:
                         fc = part.function_call
@@ -179,7 +190,12 @@ class GoogleGenAIProvider:
             usage = {
                 "input_tokens": getattr(um, "prompt_token_count", 0),
                 "output_tokens": getattr(um, "candidates_token_count", 0),
+                "thinking_tokens": getattr(um, "thoughts_token_count", 0),
             }
+
+        metadata: dict[str, Any] = {}
+        if thinking_parts:
+            metadata["thinking"] = "".join(thinking_parts)
 
         return AgentResponse(
             text="".join(text_parts),

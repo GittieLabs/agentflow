@@ -106,6 +106,28 @@ class AgentExecutor:
                 temperature=self._config.temperature,
             )
 
+            # Emit thinking text as a trace event (Gemini thinking models only).
+            # This is separated from response text in the provider's _from_api_response.
+            thinking_text = (response.raw and hasattr(response, "metadata")
+                             and response.metadata.get("thinking"))
+            # Simpler: check raw response directly since AgentResponse doesn't carry metadata yet
+            if self._events and hasattr(response, "raw") and response.raw:
+                raw = response.raw
+                if hasattr(raw, "candidates") and raw.candidates:
+                    candidate = raw.candidates[0]
+                    if candidate.content and candidate.content.parts:
+                        thought_parts = [
+                            getattr(p, "text", "") or ""
+                            for p in candidate.content.parts
+                            if getattr(p, "thought", False)
+                        ]
+                        if thought_parts:
+                            await self._events.emit("thinking", {
+                                "agent": self._config.name,
+                                "round": round_num,
+                                "thinking": "".join(thought_parts)[:1000],  # cap for WS
+                            })
+
             if response.stop_reason == "tool_use" and response.tool_calls and self._tools:
                 # Add assistant message with tool calls to history.
                 # Store raw response so providers (e.g. Gemini thinking models)
