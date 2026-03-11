@@ -8,11 +8,12 @@ that was previously hardcoded in OpenClaw's runtime.py.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from agentflow.agent.context import ContextAssembler
 from agentflow.config.schemas import AgentConfig
-from agentflow.events import EventBus, TOOL_CALLED, TOOL_RESULT, ERROR
+from agentflow.events import EventBus, TOOL_CALLED, TOOL_RESULT, ERROR, LLM_CALL_STARTED, LLM_CALL_COMPLETED
 from agentflow.protocols import LLMProvider, ToolDispatcher
 from agentflow.types import AgentResponse, Message, NodeOutput, Role, ToolResult
 
@@ -98,6 +99,16 @@ class AgentExecutor:
 
         # Tool-use loop
         for round_num in range(self._config.max_tool_rounds):
+            t0 = time.monotonic()
+            if self._events:
+                await self._events.emit(LLM_CALL_STARTED, {
+                    "agent": self._config.name,
+                    "model": self._config.model,
+                    "node": node_id,
+                    "session_id": session_id,
+                    "round": round_num,
+                })
+
             response = await self._llm.chat(
                 messages=messages,
                 system=system,
@@ -105,6 +116,21 @@ class AgentExecutor:
                 max_tokens=self._config.max_tokens,
                 temperature=self._config.temperature,
             )
+
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            if self._events:
+                await self._events.emit(LLM_CALL_COMPLETED, {
+                    "agent": self._config.name,
+                    "model": self._config.model,
+                    "node": node_id,
+                    "session_id": session_id,
+                    "round": round_num,
+                    "stop_reason": response.stop_reason,
+                    "input_tokens": response.usage.get("input_tokens", 0) if response.usage else 0,
+                    "output_tokens": response.usage.get("output_tokens", 0) if response.usage else 0,
+                    "elapsed_ms": elapsed_ms,
+                    "tool_calls": len(response.tool_calls),
+                })
 
             # Emit thinking text as a trace event (Gemini thinking models only).
             # This is separated from response text in the provider's _from_api_response.
