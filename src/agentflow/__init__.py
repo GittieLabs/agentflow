@@ -41,7 +41,8 @@ from agentflow.events import (
 from agentflow.storage import FileSystemStorage, InMemoryStorage, S3Storage
 from agentflow.tools import HTTPToolDispatcher, LocalToolDispatcher, ToolRegistry
 from agentflow.providers import AnthropicProvider, GoogleGenAIProvider, MockLLMProvider, OpenAICompatProvider
-from agentflow.session import ArtifactStore, Scratchpad, Session, SessionManager
+from agentflow.session import ArtifactStore, HistoryPersistence, MultiUserHistory, Scratchpad, Session, SessionManager
+from agentflow.orchestration import ComplexityClassifier, DAGExecutor, Plan, PlanStep
 from agentflow.memory import FileMemory, MemoryManager, VectorMemory
 from agentflow.router import RouterEngine, RoutingResult, RuleEvaluator
 from agentflow.workflow import NodeRunner, WorkflowDAG, WorkflowExecutor
@@ -96,9 +97,16 @@ __all__ = [
     "OpenAICompatProvider",
     # Session
     "ArtifactStore",
+    "HistoryPersistence",
+    "MultiUserHistory",
     "Scratchpad",
     "Session",
     "SessionManager",
+    # Orchestration
+    "ComplexityClassifier",
+    "DAGExecutor",
+    "Plan",
+    "PlanStep",
     # Memory
     "FileMemory",
     "MemoryManager",
@@ -113,4 +121,4 @@ __all__ = [
     "WorkflowExecutor",
 ]
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
