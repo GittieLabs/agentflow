@@ -25,6 +25,8 @@ WORKFLOW_STARTED = "workflow_started"
 WORKFLOW_COMPLETED = "workflow_completed"
 MEMORY_STORED = "memory_stored"
 ERROR = "error"
+LLM_CALL_STARTED = "llm_call_started"
+LLM_CALL_COMPLETED = "llm_call_completed"
 
 
 class EventBus:

@@ -26,7 +26,18 @@ from agentflow.protocols import (
 )
 from agentflow.agent import AgentExecutor, ContextAssembler, PromptTemplate
 from agentflow.config import AgentConfig, ConfigLoader, RouterConfig, WorkflowConfig
-from agentflow.events import EventBus
+from agentflow.events import (
+    EventBus,
+    LLM_CALL_STARTED,
+    LLM_CALL_COMPLETED,
+    NODE_STARTED,
+    NODE_COMPLETED,
+    TOOL_CALLED,
+    TOOL_RESULT,
+    WORKFLOW_STARTED,
+    WORKFLOW_COMPLETED,
+    ERROR,
+)
 from agentflow.storage import FileSystemStorage, InMemoryStorage, S3Storage
 from agentflow.tools import HTTPToolDispatcher, LocalToolDispatcher, ToolRegistry
 from agentflow.providers import AnthropicProvider, GoogleGenAIProvider, MockLLMProvider, OpenAICompatProvider
@@ -61,6 +72,15 @@ __all__ = [
     "WorkflowConfig",
     # Events
     "EventBus",
+    "LLM_CALL_STARTED",
+    "LLM_CALL_COMPLETED",
+    "NODE_STARTED",
+    "NODE_COMPLETED",
+    "TOOL_CALLED",
+    "TOOL_RESULT",
+    "WORKFLOW_STARTED",
+    "WORKFLOW_COMPLETED",
+    "ERROR",
     # Storage
     "FileSystemStorage",
     "InMemoryStorage",
@@ -93,4 +113,4 @@ __all__ = [
     "WorkflowExecutor",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
