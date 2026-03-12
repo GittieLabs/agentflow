@@ -66,6 +66,7 @@ class AgentResponse:
     stop_reason: str = "end_turn"  # "end_turn" | "tool_use" | "max_tokens"
     usage: dict[str, int] = field(default_factory=dict)
     raw: Any = None  # Original provider response for debugging
+    metadata: dict[str, Any] = field(default_factory=dict)  # Provider-specific metadata (e.g. thinking text)
 
 
 @dataclass

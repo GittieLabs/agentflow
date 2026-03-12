@@ -203,5 +203,5 @@ class GoogleGenAIProvider:
             stop_reason=stop_reason,
             usage=usage,
             raw=response,
-            metadata={"thinking": "".join(thinking_parts)} if thinking_parts else {},
+            metadata=metadata,
         )
