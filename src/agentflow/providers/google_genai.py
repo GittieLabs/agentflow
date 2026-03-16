@@ -57,17 +57,27 @@ class GoogleGenAIProvider:
         """Send messages to Gemini and return an AgentResponse."""
         contents = self._to_api_contents(messages)
 
+        # Enable Gemini 3.1 Pro Thinking Config if suffix is present
+        thinking_level = None
+        current_model = self._model
+        if current_model.endswith(('-low', '-medium', '-high')):
+            parts = current_model.rsplit('-', 1)
+            current_model = parts[0]
+            thinking_level = parts[1]
+
         config_kwargs: dict[str, Any] = {
             "max_output_tokens": max_tokens,
             "temperature": temperature,
         }
+        if thinking_level:
+            config_kwargs["thinking_config"] = {"thinking_level": thinking_level}
         if system:
             config_kwargs["system_instruction"] = system
 
         config = genai_types.GenerateContentConfig(**config_kwargs)
 
         kwargs: dict[str, Any] = {
-            "model": self._model,
+            "model": current_model,
             "contents": contents,
             "config": config,
         }
