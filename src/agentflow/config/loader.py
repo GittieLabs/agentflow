@@ -145,18 +145,31 @@ class ConfigLoader:
             self._context_files[key] = body
 
     def _load_shared_context(self) -> None:
-        shared_dir = self._root / "shared"
-        if not shared_dir.exists():
-            return
-        for path in sorted(shared_dir.glob("*.context.md")):
+        """Load context files from shared/ and any other non-agent/workflow directories.
+
+        Scans all subdirectories of the context root (except agents/ and workflows/)
+        for *.context.md files. Keys include the directory prefix so agents can
+        reference them as e.g. "shared/persona-keith.context.md" or
+        "templates/standard.context.md".
+        """
+        # Directories to skip (handled by other loaders)
+        skip_dirs = {"agents", "workflows"}
+
+        for subdir in sorted(self._root.iterdir()):
+            if not subdir.is_dir() or subdir.name in skip_dirs or subdir.name.startswith("."):
+                continue
+            self._load_context_dir(subdir, prefix=subdir.name)
+
+    def _load_context_dir(self, directory: Path, prefix: str) -> None:
+        """Load all *.context.md files from a directory with the given key prefix."""
+        for path in sorted(directory.glob("*.context.md")):
             meta, body = parse_prompt_file(path)
-            # Key includes "shared/" prefix so agents reference: shared/persona-keith.context.md
-            key = f"shared/{path.name}"
+            key = f"{prefix}/{path.name}"
             if meta.get("type") == "profile":
                 self._profiles[key] = ContextProfile(**meta)
-                logger.debug("Loaded shared context profile: %s", key)
+                logger.debug("Loaded context profile: %s", key)
             self._context_files[key] = body
-            logger.debug("Loaded shared context: %s", key)
+            logger.debug("Loaded context: %s from %s/", key, prefix)
 
     def _load_memory_configs(self) -> None:
         agents_dir = self._root / "agents"
