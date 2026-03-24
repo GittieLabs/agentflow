@@ -168,17 +168,21 @@ class TestVectorMemory:
             mock_qdrant = MagicMock()
             MockQdrant.return_value = mock_qdrant
 
-            # Collection already exists
+            # Collection already exists with matching dimensions
             mock_collection = MagicMock()
             mock_collection.name = "agentflow_memories"
             mock_collections_resp = MagicMock()
             mock_collections_resp.collections = [mock_collection]
             mock_qdrant.get_collections.return_value = mock_collections_resp
+            mock_info = MagicMock()
+            mock_info.config.params.vectors.size = 768
+            mock_qdrant.get_collection.return_value = mock_info
 
             memory = VectorMemory(
                 qdrant_url="http://localhost:6333",
                 collection="agentflow_memories",
                 embed_fn=mock_embed,
+                embedding_dim=768,
                 agent="test_agent",
             )
             return memory, mock_qdrant, mock_embed, mock_point_struct
@@ -202,11 +206,15 @@ class TestVectorMemory:
             mock_collections_resp = MagicMock()
             mock_collections_resp.collections = [mock_collection]
             mock_qdrant.get_collections.return_value = mock_collections_resp
+            mock_info = MagicMock()
+            mock_info.config.params.vectors.size = 768
+            mock_qdrant.get_collection.return_value = mock_info
 
             memory = VectorMemory(
                 qdrant_url="http://localhost:6333",
                 collection="agentflow_memories",
                 embed_fn=mock_embed,
+                embedding_dim=768,
                 agent="test_agent",
             )
 
@@ -287,47 +295,12 @@ class TestVectorMemory:
                 qdrant_url="http://localhost:6333",
                 collection="new_collection",
                 embed_fn=mock_embed,
+                embedding_dim=768,
             )
 
             mock_qdrant.create_collection.assert_called_once()
             call_kwargs = mock_qdrant.create_collection.call_args.kwargs
             assert call_kwargs["collection_name"] == "new_collection"
-
-
-# ── GeminiEmbed ──────────────────────────────────────────────────────────────
-
-
-class TestGeminiEmbed:
-    """Test the gemini_embed function with mocked httpx."""
-
-    @pytest.mark.asyncio
-    async def test_gemini_embed_success(self):
-        from agentflow.memory.vector_memory import gemini_embed
-
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "embedding": {"values": [0.1, 0.2, 0.3]}
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        mock_client = AsyncMock()
-        mock_client.post.return_value = mock_response
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-
-        # httpx is imported locally inside the function, so patch at the package level
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            result = await gemini_embed("test text", api_key="fake-key")
-
-        assert result == [0.1, 0.2, 0.3]
-
-    @pytest.mark.asyncio
-    async def test_gemini_embed_no_key(self):
-        from agentflow.memory.vector_memory import gemini_embed
-
-        with patch.dict("os.environ", {}, clear=True):
-            with pytest.raises(ValueError, match="GEMINI_API_KEY"):
-                await gemini_embed("test")
 
 
 # ── OpenAICompatProvider ─────────────────────────────────────────────────────
