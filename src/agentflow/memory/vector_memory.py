@@ -3,7 +3,7 @@ Vector memory backend using Qdrant.
 
 Implements the MemoryStore protocol with semantic search powered by
 vector embeddings. Supports any embedding function — default is
-Google Gemini text-embedding-004.
+Google Gemini gemini-embedding-001.
 
 Requires:
     pip install agentflow[vector]
@@ -35,13 +35,13 @@ except ImportError:
 # Type for an async embedding function: text -> vector
 EmbedFn = Callable[[str], Awaitable[list[float]]]
 
-# Gemini text-embedding-004 produces 768-dimensional vectors
-GEMINI_EMBEDDING_DIM = 768
+# Gemini gemini-embedding-001 produces 3072-dimensional vectors
+GEMINI_EMBEDDING_DIM = 3072
 
 
 async def gemini_embed(text: str, api_key: str | None = None) -> list[float]:
     """
-    Embed text using Google Gemini text-embedding-004.
+    Embed text using Google Gemini gemini-embedding-001.
 
     Uses httpx directly to avoid hard dependency on google-genai SDK.
     """
@@ -52,7 +52,7 @@ async def gemini_embed(text: str, api_key: str | None = None) -> list[float]:
     if not key:
         raise ValueError("GEMINI_API_KEY not set")
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent"
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             url,
@@ -107,17 +107,28 @@ class VectorMemory:
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
-        """Create the Qdrant collection if it doesn't exist."""
+        """Create the Qdrant collection if it doesn't exist, or recreate if dimension changed."""
         collections = [c.name for c in self._client.get_collections().collections]
-        if self._collection not in collections:
-            logger.info("Creating Qdrant collection: %s (dim=%d)", self._collection, self._embedding_dim)
-            self._client.create_collection(
-                collection_name=self._collection,
-                vectors_config=VectorParams(
-                    size=self._embedding_dim,
-                    distance=Distance.COSINE,
-                ),
-            )
+        if self._collection in collections:
+            # Check if existing collection has the right vector dimension
+            info = self._client.get_collection(self._collection)
+            existing_dim = info.config.params.vectors.size  # type: ignore[union-attr]
+            if existing_dim != self._embedding_dim:
+                logger.warning(
+                    "Qdrant collection '%s' has dim=%d but expected dim=%d — recreating",
+                    self._collection, existing_dim, self._embedding_dim,
+                )
+                self._client.delete_collection(self._collection)
+            else:
+                return  # collection exists with correct dimensions
+        logger.info("Creating Qdrant collection: %s (dim=%d)", self._collection, self._embedding_dim)
+        self._client.create_collection(
+            collection_name=self._collection,
+            vectors_config=VectorParams(
+                size=self._embedding_dim,
+                distance=Distance.COSINE,
+            ),
+        )
 
     async def store(self, content: str, metadata: dict[str, Any] | None = None) -> str:
         """
