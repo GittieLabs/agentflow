@@ -20,6 +20,7 @@ from agentflow.config.parser import parse_prompt_file
 from agentflow.config.schemas import (
     AgentConfig,
     ContextProfile,
+    DomainConfig,
     MemoryConfig,
     RouterConfig,
     WorkflowConfig,
@@ -39,6 +40,7 @@ class ConfigLoader:
         self._context_files: dict[str, str] = {}  # filename -> context body
         self._profiles: dict[str, ContextProfile] = {}  # filename -> ContextProfile
         self._memory_configs: dict[str, tuple[MemoryConfig, str]] = {}
+        self._domains: dict[str, tuple[DomainConfig, str]] = {}
 
     @property
     def agents(self) -> dict[str, tuple[AgentConfig, str]]:
@@ -56,6 +58,18 @@ class ConfigLoader:
     def profiles(self) -> dict[str, ContextProfile]:
         return self._profiles
 
+    @property
+    def domains(self) -> dict[str, tuple[DomainConfig, str]]:
+        return self._domains
+
+    def get_domain(self, name: str) -> tuple[DomainConfig, str]:
+        """Get domain config and prompt body by name."""
+        if name not in self._domains:
+            raise KeyError(
+                f"Domain not found: {name}. Available: {list(self._domains.keys())}"
+            )
+        return self._domains[name]
+
     def is_profile(self, filename: str) -> bool:
         """Check if a context file is a profile (has conditional includes)."""
         return filename in self._profiles
@@ -72,14 +86,16 @@ class ConfigLoader:
         self._load_router()
         self._load_agents()
         self._load_workflows()
+        self._load_domains()
         self._load_context_files()
         self._load_shared_context()
         self._load_memory_configs()
 
         logger.info(
-            "Loaded %d agents, %d workflows, router=%s",
+            "Loaded %d agents, %d workflows, %d domains, router=%s",
             len(self._agents),
             len(self._workflows),
+            len(self._domains),
             self._router is not None,
         )
 
@@ -130,6 +146,17 @@ class ConfigLoader:
             config = WorkflowConfig(**meta)
             self._workflows[config.name] = (config, body)
             logger.debug("Loaded workflow: %s from %s", config.name, path.name)
+
+    def _load_domains(self) -> None:
+        """Load domain definitions from domains/*.domain.md."""
+        domains_dir = self._root / "domains"
+        if not domains_dir.exists():
+            return
+        for path in sorted(domains_dir.glob("*.domain.md")):
+            meta, body = parse_prompt_file(path)
+            config = DomainConfig(**meta)
+            self._domains[config.name] = (config, body)
+            logger.debug("Loaded domain: %s from %s", config.name, path.name)
 
     def _load_context_files(self) -> None:
         agents_dir = self._root / "agents"

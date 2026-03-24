@@ -140,6 +140,50 @@ class ContextProfile(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+# ── Domain config (*.domain.md) ───────────────────────────────────────────────
+
+
+class DomainConfig(BaseModel):
+    """Front-matter schema for *.domain.md files.
+
+    A domain groups related agents and workflows under a common routing
+    boundary.  The top-level router classifies a message into a domain,
+    then the domain's own router (using ``router_model``) picks the
+    specific agent or workflow.
+
+    Example YAML front-matter::
+
+        name: content
+        description: "Content research, creation, editing, and publishing"
+        routerModel: claude-sonnet-4-6
+        agents:
+          - content_researcher
+          - content_formatter
+        workflows:
+          - content-research
+          - content-creation
+        contextFiles:
+          - shared/content-guidelines.context.md
+        fallback: content_researcher
+    """
+
+    name: str
+    description: str = ""
+    router_model: str = Field(default="claude-sonnet-4-6", alias="routerModel")
+    router_temperature: float = Field(default=0.0, alias="routerTemperature")
+    agents: list[str] = Field(default_factory=list)
+    workflows: list[str] = Field(default_factory=list)
+    context_files: list[str] = Field(default_factory=list, alias="contextFiles")
+    fallback: str = ""
+
+    model_config = {"populate_by_name": True}
+
+    @property
+    def available_targets(self) -> list[str]:
+        """All agents + workflows this domain can route to."""
+        return self.agents + self.workflows
+
+
 # ── Memory config (*.memory.md) ───────────────────────────────────────────────
 
 

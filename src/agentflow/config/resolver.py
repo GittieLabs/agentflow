@@ -33,6 +33,7 @@ class ContextResolver:
         self,
         context_files: list[str],
         runtime_context: dict[str, Any] | None = None,
+        domain_context_files: list[str] | None = None,
     ) -> list[str]:
         """
         Resolve a list of context file references to their body strings.
@@ -42,6 +43,10 @@ class ContextResolver:
                 (e.g. ["shared/content-profile.context.md", "shared/persona-keith.context.md"])
             runtime_context: Runtime context dict for evaluating conditional includes
                 (e.g. {"message": "Write a blog post about AI agents"})
+            domain_context_files: Optional list of domain-level context files to resolve
+                first.  These are prepended before the agent's own context_files so that
+                domain-wide context is always included.  Duplicates are automatically
+                de-duplicated against the agent's list.
 
         Returns:
             List of context body strings, in order, with profiles expanded.
@@ -51,6 +56,12 @@ class ContextResolver:
         seen: set[str] = set()
         result: list[str] = []
 
+        # Domain-level context first (if provided)
+        if domain_context_files:
+            for ref in domain_context_files:
+                self._resolve_ref(ref, ctx, seen, result)
+
+        # Agent-level context
         for ref in context_files:
             self._resolve_ref(ref, ctx, seen, result)
 

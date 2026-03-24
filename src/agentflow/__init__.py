@@ -25,8 +25,9 @@ from agentflow.protocols import (
     ToolDispatcher,
 )
 from agentflow.agent import AgentExecutor, ContextAssembler, PromptTemplate
-from agentflow.config import AgentConfig, ConfigLoader, RouterConfig, WorkflowConfig
+from agentflow.config import AgentConfig, ConfigLoader, DomainConfig, RouterConfig, WorkflowConfig
 from agentflow.events import (
+    DOMAIN_ROUTED,
     EventBus,
     LLM_CALL_STARTED,
     LLM_CALL_COMPLETED,
@@ -44,7 +45,7 @@ from agentflow.providers import AnthropicProvider, GoogleGenAIProvider, MockLLMP
 from agentflow.session import ArtifactStore, HistoryPersistence, MultiUserHistory, Scratchpad, Session, SessionManager
 from agentflow.orchestration import ComplexityClassifier, DAGExecutor, Plan, PlanStep
 from agentflow.memory import FileMemory, MemoryManager, VectorMemory
-from agentflow.router import RouterEngine, RoutingResult, RuleEvaluator
+from agentflow.router import DomainRouter, RouterEngine, RoutingResult, RuleEvaluator
 from agentflow.workflow import NodeRunner, WorkflowDAG, WorkflowExecutor
 
 __all__ = [
@@ -69,9 +70,11 @@ __all__ = [
     # Config
     "AgentConfig",
     "ConfigLoader",
+    "DomainConfig",
     "RouterConfig",
     "WorkflowConfig",
     # Events
+    "DOMAIN_ROUTED",
     "EventBus",
     "LLM_CALL_STARTED",
     "LLM_CALL_COMPLETED",
@@ -114,6 +117,7 @@ __all__ = [
     "MemoryManager",
     "VectorMemory",
     # Router
+    "DomainRouter",
     "RouterEngine",
     "RoutingResult",
     "RuleEvaluator",
@@ -131,4 +135,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'agentflow' has no attribute {name!r}")
 
 
-__version__ = "0.2.1"
+__version__ = "0.4.0"

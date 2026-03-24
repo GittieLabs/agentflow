@@ -27,13 +27,23 @@ logger = logging.getLogger("agentflow.router")
 class RoutingResult:
     """The outcome of a routing decision."""
 
-    def __init__(self, target: str, method: str, confidence: float = 1.0) -> None:
+    def __init__(
+        self,
+        target: str,
+        method: str,
+        confidence: float = 1.0,
+        domain: str | None = None,
+    ) -> None:
         self.target = target       # Agent or workflow name
-        self.method = method       # "rule" | "llm" | "fallback"
+        self.method = method       # "rule" | "llm" | "fallback" | "domain:*"
         self.confidence = confidence
+        self.domain = domain       # Which domain handled this (None for flat routing)
 
     def __repr__(self) -> str:
-        return f"RoutingResult(target={self.target!r}, method={self.method!r})"
+        parts = f"target={self.target!r}, method={self.method!r}"
+        if self.domain:
+            parts += f", domain={self.domain!r}"
+        return f"RoutingResult({parts})"
 
 
 class RouterEngine:
