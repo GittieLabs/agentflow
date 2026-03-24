@@ -30,3 +30,6 @@ htmlcov/
 # Environment
 .env
 .env.local
+
+# Documentation build
+site/
