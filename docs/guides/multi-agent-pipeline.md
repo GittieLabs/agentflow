@@ -85,9 +85,23 @@ max_tokens: 4096
 context_files: [shared/report-format.context.md]
 ---
 
-You are a report writer. Given an analysis and a summary, combine them
-into a polished, well-structured report. Use the provided format guidelines.
+You are a report writer. You receive two labeled sections:
+
+[analysis]
+Key insights and trends extracted from the research.
+
+[summary]
+A concise executive summary of the same research.
+
+Combine them into a polished, well-structured report using the provided
+format guidelines.
 ```
+
+> **Why the labeled sections?**  The `report` node uses named inputs
+> (`analysis:` and `summary:`).  AgentFlow delivers these as labeled
+> `[analysis]` and `[summary]` sections in the message.  The system prompt
+> should explicitly describe these labels so the agent knows what to expect.
+> See [Input Mappings](../concepts/workflows.md#input-mappings) for details.
 
 ## Step 2: Define Shared Context
 
@@ -145,10 +159,26 @@ Research -> parallel analysis + summarization -> final report.
 
 Key points:
 
-- The `research` node fans out to both `analyze` and `summarize`
+- The `research` node fans out to both `analyze` and `summarize` via `next: [analyze, summarize]`
 - Both downstream nodes use `mode: parallel` to run concurrently
-- The `report` node receives inputs from both parallel branches
+- The `report` node uses **named inputs** — `analysis:` and `summary:` — to receive output from both parallel branches as labeled sections
 - `callable: true` allows this workflow to be invoked by the orchestration layer
+
+**How the `report` node receives its inputs:**
+
+Because `report` uses named inputs (no `message` key), AgentFlow delivers the
+resolved values as labeled sections in definition order:
+
+```
+[analysis]
+Key insights and trends... (output of the 'analyze' node)
+
+[summary]
+Brief overview... (output of the 'summarize' node)
+```
+
+The `report_writer` system prompt should reference `[analysis]` and `[summary]`
+by name.  See the agent definition in Step 1 above.
 
 ## Step 4: Define Routing
 

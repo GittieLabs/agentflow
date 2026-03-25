@@ -2,6 +2,59 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.5.2
+
+### Changed
+
+- **Named inputs deliver labeled sections to agents.** When a workflow node
+  defines `inputs` with keys other than `message`, each key is now resolved
+  in YAML-definition order and delivered as a labeled `[key]\nvalue` section.
+  Previously, non-`message` keys were processed through `_predecessors()` and
+  concatenated without labels in non-deterministic (set iteration) order.
+
+  Before (0.5.1 behavior — unlabeled, unordered):
+
+  ```
+  ## Section 1
+  Body text.
+
+  # Outline content
+  ```
+
+  After (0.5.2 behavior — labeled, definition order):
+
+  ```
+  [outline]
+  # Outline content
+
+  [sections]
+  ## Section 1
+  Body text.
+  ```
+
+  **Migration:** Agent system prompts that receive named inputs should be
+  updated to reference the labeled sections by key name.  The `message` key
+  pattern is unchanged.
+
+### Fixed
+
+- `NodeRunner._predecessors()` renamed to `_input_node_ids()` with corrected
+  docstring.  The method is used only for scratchpad context filtering; it is
+  no longer involved in message resolution.
+
+### Added
+
+- Four new tests covering named inputs: labeled section format, definition
+  order preservation, missing upstream node handling, and end-to-end workflow
+  integration.
+
+## 0.5.1
+
+### Fixed
+
+- Release workflow: no longer fails if a GitHub release already exists for
+  the current tag.
+
 ## 0.5.0 (alpha)
 
 ### Breaking Changes

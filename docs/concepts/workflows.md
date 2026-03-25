@@ -110,18 +110,83 @@ nodes:
 
 ## Input Mappings
 
-The `inputs` field maps parameter names to outputs from upstream nodes using dot notation:
+The `inputs` field controls what each node receives as its message.  There are three distinct patterns, applied in priority order.
+
+### Pattern 1 — Single message (`message` key)
+
+Route one upstream output directly as the message.  Use this for most linear
+pipeline steps where the node has a single predecessor.
+
+```yaml
+- id: summarize
+  agent: summarizer
+  inputs:
+    message: "research.text"      # passes research node's text output
+```
+
+### Pattern 2 — Named inputs (any keys except `message`)
+
+When a node needs output from **multiple** upstream nodes, use named keys.
+Each key is resolved in YAML-definition order and delivered as a labeled
+section:
+
+```yaml
+- id: report
+  agent: report_writer
+  inputs:
+    analysis: "analyze.text"
+    summary: "summarize.text"
+```
+
+The agent receives a single message containing both inputs, clearly labeled:
+
+```
+[analysis]
+<content from analyze node>
+
+[summary]
+<content from summarize node>
+```
+
+Write the agent's system prompt to reference these sections by label name —
+for example: *"You receive two labeled sections: [analysis] and [summary]..."*
+
+> **Important:** the `message` key takes priority.  If `message` is present,
+> all other keys in the same `inputs` block are ignored.  Never mix `message`
+> with named keys in the same node.
+
+### Pattern 3 — No inputs defined
+
+The node receives the workflow's initial message.  Use this only for the
+**first node** in a pipeline.  Non-entry nodes with no `inputs` defined will
+receive an empty message.
+
+```yaml
+- id: research        # entry node — receives the initial workflow message
+  agent: researcher
+  next: [analyze, summarize]
+```
+
+### Reference syntax
+
+All input values use dot notation to reference prior node outputs:
 
 ```yaml
 inputs:
-  message: "research.text"        # text output from research node
-  data: "analyze.artifacts.chart" # artifact from analyze node
+  data: "research.text"            # text output from the 'research' node
+  leads: "extract.artifacts.leads" # named artifact from the 'extract' node
 ```
 
-The referenced values come from `NodeOutput` objects:
+Supported reference forms:
 
-- `<node_id>.text` -- the node's text response
-- `<node_id>.artifacts.<key>` -- named artifacts produced by the node
+- `<node_id>.text` — the node's full text response
+- `<node_id>.artifacts.<key>` — a named artifact produced by the node
+
+The `node_id` can be **any previously completed node**, not just a direct DAG
+predecessor.  The executor passes all completed outputs to each node, so you
+can reference a grandparent or sibling node directly.  That said, always add
+the corresponding DAG edge (`next:` entry) so the execution order is
+guaranteed.
 
 ## WorkflowDAG
 

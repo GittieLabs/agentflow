@@ -308,3 +308,183 @@ async def test_workflow_executor_single_node():
 
     assert len(outputs) == 1
     assert outputs["only"].text == "Done."
+
+
+# ── Named inputs ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_node_runner_named_inputs_build_labeled_message():
+    """Named inputs (no 'message' key) produce [key]\\nvalue labeled sections."""
+    config = AgentConfig(name="assembler")
+    mock_llm = MockLLMProvider([
+        AgentResponse(text="Assembly complete.", stop_reason="end_turn"),
+    ])
+    executor = AgentExecutor(config=config, prompt_body="You assemble documents.", llm=mock_llm)
+
+    node = WorkflowNode(
+        id="assemble",
+        agent="assembler",
+        inputs={
+            "outline": "outline_node.text",
+            "sections": "write_node.text",
+        },
+    )
+    runner = NodeRunner(node=node, executor=executor)
+
+    prior = {
+        "outline_node": NodeOutput(node_id="outline_node", agent_id="outliner", text="# Outline content"),
+        "write_node": NodeOutput(node_id="write_node", agent_id="writer", text="## Section 1\nBody text."),
+    }
+    result = await runner.run(prior_outputs=prior)
+    assert result.text == "Assembly complete."
+
+    # Verify the assembled message was delivered with labeled sections
+    sent_messages = mock_llm.calls[0]["messages"]
+    user_content = next(m.content for m in sent_messages if m.role.value == "user")
+    assert "[outline]\n# Outline content" in user_content
+    assert "[sections]\n## Section 1\nBody text." in user_content
+
+
+@pytest.mark.asyncio
+async def test_node_runner_named_inputs_preserve_definition_order():
+    """Named inputs appear in YAML-definition order, not hash order."""
+    config = AgentConfig(name="merger")
+    mock_llm = MockLLMProvider([
+        AgentResponse(text="Merged.", stop_reason="end_turn"),
+    ])
+    executor = AgentExecutor(config=config, prompt_body="You merge results.", llm=mock_llm)
+
+    # Define inputs in a deliberate order: analysis, then summary
+    node = WorkflowNode(
+        id="report",
+        agent="merger",
+        inputs={
+            "analysis": "analyze.text",
+            "summary": "summarize.text",
+        },
+    )
+    runner = NodeRunner(node=node, executor=executor)
+
+    prior = {
+        "analyze": NodeOutput(node_id="analyze", agent_id="analyst", text="Deep analysis here."),
+        "summarize": NodeOutput(node_id="summarize", agent_id="summarizer", text="Brief summary here."),
+    }
+    await runner.run(prior_outputs=prior)
+
+    sent_messages = mock_llm.calls[0]["messages"]
+    user_content = next(m.content for m in sent_messages if m.role.value == "user")
+
+    # analysis must appear before summary
+    analysis_pos = user_content.index("[analysis]")
+    summary_pos = user_content.index("[summary]")
+    assert analysis_pos < summary_pos
+
+
+@pytest.mark.asyncio
+async def test_node_runner_named_inputs_missing_upstream_node_is_empty():
+    """If a referenced upstream node has no output, that section resolves to empty."""
+    config = AgentConfig(name="assembler")
+    mock_llm = MockLLMProvider([
+        AgentResponse(text="Done.", stop_reason="end_turn"),
+    ])
+    executor = AgentExecutor(config=config, prompt_body="Assembler.", llm=mock_llm)
+
+    node = WorkflowNode(
+        id="assemble",
+        agent="assembler",
+        inputs={
+            "outline": "outline_node.text",
+            "sections": "missing_node.text",   # 'missing_node' not in prior_outputs
+        },
+    )
+    runner = NodeRunner(node=node, executor=executor)
+
+    prior = {
+        "outline_node": NodeOutput(node_id="outline_node", agent_id="outliner", text="Outline here."),
+        # 'missing_node' intentionally absent
+    }
+    result = await runner.run(prior_outputs=prior)
+    assert result.text == "Done."
+
+    sent_messages = mock_llm.calls[0]["messages"]
+    user_content = next(m.content for m in sent_messages if m.role.value == "user")
+    assert "[outline]\nOutline here." in user_content
+    assert "[sections]\n" in user_content   # label present, value empty
+
+
+@pytest.mark.asyncio
+async def test_workflow_executor_named_inputs_multi_node():
+    """
+    Integration test: fan-out -> two parallel workers -> merge node with named inputs.
+
+    Verifies that the merge node receives labeled [analysis] and [summary]
+    sections in definition order when the workflow uses named inputs.
+    """
+    wf_config = WorkflowConfig(
+        name="named_inputs_pipeline",
+        nodes=[
+            WorkflowNode(id="research", agent="researcher", next=["analyze", "summarize"]),
+            WorkflowNode(
+                id="analyze",
+                agent="analyst",
+                mode="parallel",
+                inputs={"message": "research.text"},
+                next=["report"],
+            ),
+            WorkflowNode(
+                id="summarize",
+                agent="summarizer",
+                mode="parallel",
+                inputs={"message": "research.text"},
+                next=["report"],
+            ),
+            WorkflowNode(
+                id="report",
+                agent="reporter",
+                inputs={
+                    "analysis": "analyze.text",
+                    "summary": "summarize.text",
+                },
+            ),
+        ],
+    )
+
+    node_map = {n.id: n for n in wf_config.nodes}
+    responses = {
+        "research": [AgentResponse(text="Raw findings.", stop_reason="end_turn")],
+        "analyze": [AgentResponse(text="Key insights.", stop_reason="end_turn")],
+        "summarize": [AgentResponse(text="Brief overview.", stop_reason="end_turn")],
+        "report": [AgentResponse(text="Final report.", stop_reason="end_turn")],
+    }
+    captured: dict[str, str] = {}
+
+    def runner_factory(node_id: str) -> NodeRunner:
+        node = node_map[node_id]
+        agent_config = AgentConfig(name=node.agent)
+        mock_llm = MockLLMProvider(responses[node_id])
+        executor = AgentExecutor(config=agent_config, prompt_body=f"You are {node.agent}.", llm=mock_llm)
+        runner = NodeRunner(node=node, executor=executor)
+
+        if node_id == "report":
+            original_resolve = runner._resolve_message
+
+            def capturing_resolve(prior_outputs):
+                msg = original_resolve(prior_outputs)
+                captured["report_message"] = msg
+                return msg
+
+            runner._resolve_message = capturing_resolve
+
+        return runner
+
+    wf_executor = WorkflowExecutor(config=wf_config, runner_factory=runner_factory)
+    outputs = await wf_executor.run(initial_message="Research AI trends")
+
+    assert outputs["report"].text == "Final report."
+
+    report_msg = captured["report_message"]
+    assert "[analysis]\nKey insights." in report_msg
+    assert "[summary]\nBrief overview." in report_msg
+    # analysis defined first — must appear before summary
+    assert report_msg.index("[analysis]") < report_msg.index("[summary]")
