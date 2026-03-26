@@ -111,10 +111,16 @@ class LangfuseEventHandler:
         }
         if host:
             kwargs["host"] = host
-        if resource_attributes:
-            kwargs["resource_attributes"] = resource_attributes
 
-        self._lf = Langfuse(**kwargs)
+        # resource_attributes may not be supported in older Langfuse SDK versions
+        if resource_attributes:
+            try:
+                self._lf = Langfuse(**kwargs, resource_attributes=resource_attributes)
+            except TypeError:
+                logger.info("Langfuse SDK does not support resource_attributes — skipping")
+                self._lf = Langfuse(**kwargs)
+        else:
+            self._lf = Langfuse(**kwargs)
 
         # Active observations — keyed by workflow name (root spans) / node_id (child spans)
         self._root_spans: dict[str, Any] = {}   # workflow → root LangfuseSpan
