@@ -121,8 +121,19 @@ class NodeRunner:
         return result
 
     def _resolve_message(self, prior_outputs: dict[str, NodeOutput]) -> str:
+        return NodeRunner.resolve_message(self._node.inputs, prior_outputs)
+
+    def _resolve_ref(self, ref: str, prior_outputs: dict[str, NodeOutput]) -> str:
+        return NodeRunner.resolve_ref(ref, prior_outputs)
+
+    # ------------------------------------------------------------------
+    # Static helpers — used by the executor for handler / foreach nodes
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def resolve_message(inputs: dict[str, str], prior_outputs: dict[str, NodeOutput]) -> str:
         """
-        Build the message for this node from input mappings or prior outputs.
+        Build the message for a node from input mappings or prior outputs.
 
         Resolution rules (applied in order):
 
@@ -149,17 +160,15 @@ class NodeRunner:
         non-entry nodes with no ``inputs`` key, the message will be empty —
         always use Rule 1 or Rule 2 to wire data between pipeline stages.
         """
-        inputs = self._node.inputs
-
         # Rule 1: single explicit message
         if "message" in inputs:
-            return self._resolve_ref(inputs["message"], prior_outputs)
+            return NodeRunner.resolve_ref(inputs["message"], prior_outputs)
 
         # Rule 2: named inputs — labeled sections in definition order
         if inputs:
             parts = []
             for key, ref in inputs.items():
-                value = self._resolve_ref(ref, prior_outputs)
+                value = NodeRunner.resolve_ref(ref, prior_outputs)
                 parts.append(f"[{key}]\n{value}")
             return "\n\n".join(parts)
 
@@ -167,7 +176,8 @@ class NodeRunner:
         initial = prior_outputs.get("__initial__")
         return initial.text if initial else ""
 
-    def _resolve_ref(self, ref: str, prior_outputs: dict[str, NodeOutput]) -> str:
+    @staticmethod
+    def resolve_ref(ref: str, prior_outputs: dict[str, NodeOutput]) -> str:
         """
         Resolve a dotted reference to a prior node's output.
 
@@ -188,6 +198,31 @@ class NodeRunner:
             return output.text
         elif parts[1] == "artifacts" and len(parts) >= 3:
             return str(output.artifacts.get(parts[2], ""))
+
+        return output.text
+
+    @staticmethod
+    def resolve_ref_raw(ref: str, prior_outputs: dict[str, NodeOutput]) -> Any:
+        """
+        Resolve a dotted reference and return the raw Python object.
+
+        Unlike :meth:`resolve_ref`, this does **not** stringify the result.
+        Used by foreach expansion to obtain the actual list from an
+        ``artifacts`` reference.
+        """
+        parts = ref.split(".")
+        if len(parts) < 2:
+            return ref
+
+        node_id = parts[0]
+        output = prior_outputs.get(node_id)
+        if not output:
+            return None
+
+        if parts[1] == "text":
+            return output.text
+        elif parts[1] == "artifacts" and len(parts) >= 3:
+            return output.artifacts.get(parts[2])
 
         return output.text
 

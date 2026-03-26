@@ -6,7 +6,7 @@ has a corresponding schema that validates and types the front-matter.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Agent config (*.prompt.md) ────────────────────────────────────────────────
@@ -62,13 +62,34 @@ class RouterConfig(BaseModel):
 
 
 class WorkflowNode(BaseModel):
-    """A single node in a workflow DAG."""
+    """A single node in a workflow DAG.
+
+    Each node must have exactly one of ``agent`` (LLM execution) or
+    ``handler`` (registered Python function).  Optionally, ``foreach``
+    references a list artifact from an upstream node — the executor runs
+    this node once per item in that list, collecting results into
+    ``artifacts["results"]``.
+    """
 
     id: str
-    agent: str
+    agent: str | None = None
+    handler: str | None = None
+    foreach: str | None = None
     next: list[str] | str | None = None
     mode: str = "sync"  # "sync" | "parallel" | "async"
     inputs: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _check_agent_or_handler(self) -> "WorkflowNode":
+        if self.agent and self.handler:
+            raise ValueError(
+                f"Node '{self.id}': set either 'agent' or 'handler', not both"
+            )
+        if not self.agent and not self.handler:
+            raise ValueError(
+                f"Node '{self.id}': must set 'agent' or 'handler'"
+            )
+        return self
 
     def next_nodes(self) -> list[str]:
         """Normalize next to a list."""

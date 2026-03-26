@@ -1,4 +1,5 @@
 """Tests for workflow: WorkflowDAG, NodeRunner, WorkflowExecutor."""
+import json
 import pytest
 
 from agentflow.config.schemas import AgentConfig, WorkflowConfig, WorkflowNode
@@ -488,3 +489,454 @@ async def test_workflow_executor_named_inputs_multi_node():
     assert "[summary]\nBrief overview." in report_msg
     # analysis defined first — must appear before summary
     assert report_msg.index("[analysis]") < report_msg.index("[summary]")
+
+
+# ── Schema validation ────────────────────────────────────────────────────────
+
+
+def test_schema_agent_or_handler_required():
+    """Node must have either agent or handler, not both, not neither."""
+    with pytest.raises(ValueError, match="must set 'agent' or 'handler'"):
+        WorkflowNode(id="bad", agent=None, handler=None)
+
+    with pytest.raises(ValueError, match="set either 'agent' or 'handler', not both"):
+        WorkflowNode(id="bad", agent="some_agent", handler="some_handler")
+
+
+def test_schema_handler_node_valid():
+    """A handler node (no agent) is valid."""
+    node = WorkflowNode(id="code", handler="my_handler")
+    assert node.handler == "my_handler"
+    assert node.agent is None
+
+
+def test_schema_foreach_field():
+    """foreach is an optional string field."""
+    node = WorkflowNode(id="loop", agent="writer", foreach="toc.artifacts.sections")
+    assert node.foreach == "toc.artifacts.sections"
+
+
+# ── DAG validation: foreach refs ─────────────────────────────────────────────
+
+
+def test_dag_validate_foreach_bad_ref():
+    """foreach referencing a non-existent node produces a validation error."""
+    config = WorkflowConfig(
+        name="test",
+        nodes=[
+            WorkflowNode(
+                id="loop",
+                agent="writer",
+                foreach="nonexistent.artifacts.items",
+            ),
+        ],
+    )
+    dag = WorkflowDAG(config)
+    errors = dag.validate()
+    assert any("nonexistent" in e for e in errors)
+
+
+def test_dag_validate_foreach_valid_ref():
+    """foreach referencing an existing node passes validation."""
+    config = WorkflowConfig(
+        name="test",
+        nodes=[
+            WorkflowNode(id="source", agent="producer", next=["loop"]),
+            WorkflowNode(
+                id="loop",
+                agent="writer",
+                foreach="source.artifacts.items",
+            ),
+        ],
+    )
+    dag = WorkflowDAG(config)
+    assert dag.validate() == []
+
+
+# ── Handler nodes ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_handler_node_basic():
+    """A handler node runs a registered Python function instead of an LLM."""
+    async def my_handler(message: str, prior_outputs: dict) -> NodeOutput:
+        return NodeOutput(
+            node_id="transform",
+            agent_id="my_handler",
+            text=f"Transformed: {message}",
+        )
+
+    wf_config = WorkflowConfig(
+        name="handler_test",
+        nodes=[
+            WorkflowNode(id="source", agent="source_agent", next=["transform"]),
+            WorkflowNode(
+                id="transform",
+                handler="my_handler",
+                inputs={"message": "source.text"},
+            ),
+        ],
+    )
+
+    node_map = {n.id: n for n in wf_config.nodes}
+
+    def runner_factory(node_id: str) -> NodeRunner:
+        node = node_map[node_id]
+        config = AgentConfig(name=node.agent or "")
+        mock_llm = MockLLMProvider([
+            AgentResponse(text="Source output.", stop_reason="end_turn"),
+        ])
+        return NodeRunner(
+            node=node,
+            executor=AgentExecutor(config=config, prompt_body="Source.", llm=mock_llm),
+        )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=runner_factory,
+        handlers={"my_handler": my_handler},
+    )
+    outputs = await executor.run(initial_message="Input")
+
+    assert outputs["source"].text == "Source output."
+    assert outputs["transform"].text == "Transformed: Source output."
+
+
+@pytest.mark.asyncio
+async def test_handler_node_with_named_inputs():
+    """Handler nodes receive labeled sections from named inputs."""
+    received_messages: list[str] = []
+
+    async def capture_handler(message: str, prior_outputs: dict) -> NodeOutput:
+        received_messages.append(message)
+        return NodeOutput(node_id="merge", agent_id="capture", text="merged")
+
+    wf_config = WorkflowConfig(
+        name="handler_inputs",
+        nodes=[
+            WorkflowNode(id="a", agent="a_agent", next=["b", "merge"]),
+            WorkflowNode(id="b", agent="b_agent", inputs={"message": "a.text"}, next=["merge"]),
+            WorkflowNode(
+                id="merge",
+                handler="capture",
+                inputs={"first": "a.text", "second": "b.text"},
+            ),
+        ],
+    )
+
+    node_map = {n.id: n for n in wf_config.nodes}
+    responses = {
+        "a": [AgentResponse(text="Alpha", stop_reason="end_turn")],
+        "b": [AgentResponse(text="Beta", stop_reason="end_turn")],
+    }
+
+    def runner_factory(node_id: str) -> NodeRunner:
+        node = node_map[node_id]
+        config = AgentConfig(name=node.agent or "")
+        mock_llm = MockLLMProvider(responses.get(node_id, []))
+        return NodeRunner(
+            node=node,
+            executor=AgentExecutor(config=config, prompt_body=".", llm=mock_llm),
+        )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=runner_factory,
+        handlers={"capture": capture_handler},
+    )
+    await executor.run(initial_message="Go")
+
+    assert len(received_messages) == 1
+    msg = received_messages[0]
+    assert "[first]\nAlpha" in msg
+    assert "[second]\nBeta" in msg
+
+
+@pytest.mark.asyncio
+async def test_handler_not_registered_raises():
+    """Referencing an unregistered handler raises ValueError."""
+    wf_config = WorkflowConfig(
+        name="test",
+        nodes=[
+            WorkflowNode(id="code", handler="nonexistent"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,  # never called
+        handlers={},
+    )
+    outputs = await executor.run(initial_message="Go")
+    # Node fails with an error message
+    assert "error" in outputs["code"].metadata
+    assert "nonexistent" in outputs["code"].text
+
+
+# ── Foreach nodes ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_foreach_basic():
+    """A foreach node runs once per item in the referenced list artifact."""
+    wf_config = WorkflowConfig(
+        name="foreach_test",
+        nodes=[
+            WorkflowNode(id="source", handler="produce_list", next=["process"]),
+            WorkflowNode(
+                id="process",
+                agent="processor",
+                foreach="source.artifacts.items",
+            ),
+        ],
+    )
+
+    async def produce_list(message: str, prior_outputs: dict) -> NodeOutput:
+        return NodeOutput(
+            node_id="source",
+            agent_id="produce_list",
+            text="Items ready.",
+            artifacts={"items": ["apple", "banana", "cherry"]},
+        )
+
+    node_map = {n.id: n for n in wf_config.nodes}
+    # Need 3 responses — one per foreach iteration
+    call_count = 0
+
+    def runner_factory(node_id: str) -> NodeRunner:
+        nonlocal call_count
+        node = node_map[node_id]
+        config = AgentConfig(name=node.agent or "")
+        mock_llm = MockLLMProvider([
+            AgentResponse(text=f"Processed item", stop_reason="end_turn"),
+        ])
+        return NodeRunner(
+            node=node,
+            executor=AgentExecutor(config=config, prompt_body="Process each item.", llm=mock_llm),
+        )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=runner_factory,
+        handlers={"produce_list": produce_list},
+    )
+    outputs = await executor.run(initial_message="Go")
+
+    assert outputs["source"].text == "Items ready."
+    assert "results" in outputs["process"].artifacts
+    assert len(outputs["process"].artifacts["results"]) == 3
+    assert outputs["process"].metadata.get("foreach") is True
+    assert outputs["process"].metadata.get("iterations") == 3
+
+
+@pytest.mark.asyncio
+async def test_foreach_accumulation():
+    """Each foreach iteration can access prior results via loop variables."""
+    captured_vars: list[dict] = []
+
+    wf_config = WorkflowConfig(
+        name="accumulation",
+        nodes=[
+            WorkflowNode(id="source", handler="list_maker", next=["writer"]),
+            WorkflowNode(
+                id="writer",
+                agent="writer_agent",
+                foreach="source.artifacts.items",
+            ),
+        ],
+    )
+
+    async def list_maker(message: str, prior_outputs: dict) -> NodeOutput:
+        return NodeOutput(
+            node_id="source", agent_id="list_maker", text="Ready.",
+            artifacts={"items": ["sec1", "sec2", "sec3"]},
+        )
+
+    node_map = {n.id: n for n in wf_config.nodes}
+
+    def runner_factory(node_id: str) -> NodeRunner:
+        node = node_map[node_id]
+        config = AgentConfig(name=node.agent or "")
+        mock_llm = MockLLMProvider([
+            AgentResponse(text="Written.", stop_reason="end_turn"),
+        ])
+        executor = AgentExecutor(config=config, prompt_body="Write.", llm=mock_llm)
+        runner = NodeRunner(node=node, executor=executor)
+
+        original_run = runner.run
+
+        async def capturing_run(prior_outputs, session_id=None, variables=None):
+            if variables:
+                captured_vars.append(dict(variables))
+            return await original_run(prior_outputs=prior_outputs, session_id=session_id, variables=variables)
+
+        runner.run = capturing_run
+        return runner
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=runner_factory,
+        handlers={"list_maker": list_maker},
+    )
+    outputs = await executor.run(initial_message="Go")
+
+    assert len(captured_vars) == 3
+
+    # First iteration: no prior results
+    assert captured_vars[0]["loop_index"] == "0"
+    assert captured_vars[0]["loop_total"] == "3"
+    assert captured_vars[0]["loop_prior_results"] == ""
+
+    # Second iteration: has first result
+    assert captured_vars[1]["loop_index"] == "1"
+    assert "Written." in captured_vars[1]["loop_prior_results"]
+
+    # Third iteration: has first two results
+    assert captured_vars[2]["loop_index"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_foreach_empty_list():
+    """Foreach with an empty list produces empty results, no error."""
+    wf_config = WorkflowConfig(
+        name="empty",
+        nodes=[
+            WorkflowNode(id="source", handler="empty_list", next=["process"]),
+            WorkflowNode(id="process", agent="proc", foreach="source.artifacts.items"),
+        ],
+    )
+
+    async def empty_list(message: str, prior_outputs: dict) -> NodeOutput:
+        return NodeOutput(
+            node_id="source", agent_id="empty_list", text="Empty.",
+            artifacts={"items": []},
+        )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"empty_list": empty_list},
+    )
+    outputs = await executor.run(initial_message="Go")
+
+    assert outputs["process"].artifacts["results"] == []
+    assert outputs["process"].metadata["iterations"] == 0
+
+
+@pytest.mark.asyncio
+async def test_foreach_with_handler():
+    """A foreach node can use a handler instead of an LLM agent."""
+    wf_config = WorkflowConfig(
+        name="foreach_handler",
+        nodes=[
+            WorkflowNode(id="source", handler="make_items", next=["transform"]),
+            WorkflowNode(
+                id="transform",
+                handler="process_item",
+                foreach="source.artifacts.items",
+            ),
+        ],
+    )
+
+    async def make_items(message: str, prior_outputs: dict) -> NodeOutput:
+        return NodeOutput(
+            node_id="source", agent_id="make_items", text="Ready.",
+            artifacts={"items": [1, 2, 3]},
+        )
+
+    async def process_item(message: str, prior_outputs: dict) -> NodeOutput:
+        # __loop__ should be in prior_outputs
+        loop = prior_outputs.get("__loop__")
+        item = loop.artifacts["item"] if loop else "?"
+        return NodeOutput(
+            node_id="transform", agent_id="process_item",
+            text=f"Doubled: {item * 2}",
+        )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"make_items": make_items, "process_item": process_item},
+    )
+    outputs = await executor.run(initial_message="Go")
+
+    results = outputs["transform"].artifacts["results"]
+    assert results == ["Doubled: 2", "Doubled: 4", "Doubled: 6"]
+
+
+@pytest.mark.asyncio
+async def test_foreach_mid_loop_failure():
+    """If an iteration fails, the node returns partial results + error metadata."""
+    call_count = 0
+
+    wf_config = WorkflowConfig(
+        name="fail_test",
+        nodes=[
+            WorkflowNode(id="source", handler="items", next=["process"]),
+            WorkflowNode(id="process", handler="fail_on_2", foreach="source.artifacts.items"),
+        ],
+    )
+
+    async def items(message: str, prior_outputs: dict) -> NodeOutput:
+        return NodeOutput(
+            node_id="source", agent_id="items", text="Ready.",
+            artifacts={"items": ["a", "b", "c"]},
+        )
+
+    async def fail_on_2(message: str, prior_outputs: dict) -> NodeOutput:
+        nonlocal call_count
+        call_count += 1
+        loop = prior_outputs.get("__loop__")
+        idx = loop.artifacts["index"] if loop else 0
+        if idx == 1:
+            raise RuntimeError("Deliberate failure on item 2")
+        return NodeOutput(
+            node_id="process", agent_id="fail_on_2",
+            text=f"OK: {loop.artifacts['item']}",
+        )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"items": items, "fail_on_2": fail_on_2},
+    )
+    outputs = await executor.run(initial_message="Go")
+
+    result = outputs["process"]
+    assert result.metadata.get("error") is True
+    assert result.metadata.get("failed_index") == 1
+    # First iteration succeeded
+    assert result.artifacts["results"] == ["OK: a"]
+
+
+@pytest.mark.asyncio
+async def test_backward_compat_existing_workflows():
+    """Existing workflows (agent-only, no foreach/handler) still work."""
+    wf_config = WorkflowConfig(
+        name="legacy",
+        nodes=[
+            WorkflowNode(id="a", agent="agent_a", next=["b"]),
+            WorkflowNode(id="b", agent="agent_b"),
+        ],
+    )
+
+    node_map = {n.id: n for n in wf_config.nodes}
+    responses = {
+        "a": [AgentResponse(text="A done.", stop_reason="end_turn")],
+        "b": [AgentResponse(text="B done.", stop_reason="end_turn")],
+    }
+
+    def runner_factory(node_id: str) -> NodeRunner:
+        node = node_map[node_id]
+        config = AgentConfig(name=node.agent)
+        mock_llm = MockLLMProvider(responses[node_id])
+        return NodeRunner(
+            node=node,
+            executor=AgentExecutor(config=config, prompt_body=".", llm=mock_llm),
+        )
+
+    executor = WorkflowExecutor(config=wf_config, runner_factory=runner_factory)
+    outputs = await executor.run(initial_message="Start")
+
+    assert outputs["a"].text == "A done."
+    assert outputs["b"].text == "B done."

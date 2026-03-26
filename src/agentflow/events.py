@@ -28,6 +28,7 @@ DOMAIN_ROUTED = "domain_routed"
 ERROR = "error"
 LLM_CALL_STARTED = "llm_call_started"
 LLM_CALL_COMPLETED = "llm_call_completed"
+FOREACH_ITERATION = "foreach_iteration"
 
 
 class EventBus:

@@ -125,4 +125,14 @@ class WorkflowDAG:
         if not self.entry_nodes():
             errors.append("Workflow has no entry nodes (all nodes have predecessors)")
 
+        # Validate foreach references point to existing node IDs
+        for node in self._config.nodes:
+            if node.foreach:
+                ref_node = node.foreach.split(".")[0]
+                if ref_node not in self._nodes:
+                    errors.append(
+                        f"Node '{node.id}' foreach ref '{node.foreach}' "
+                        f"references unknown node '{ref_node}'"
+                    )
+
         return errors
