@@ -97,12 +97,6 @@ class NodeRunner:
         # Resolve input message from prior node outputs
         message = self._resolve_message(prior_outputs)
 
-        # Map all inputs to variables for Jinja templating
-        merged_variables = dict(variables) if variables else {}
-        for key, ref in self._node.inputs.items():
-            # 'message' is passed explicitly, but we can also make it available as a variable
-            merged_variables[key] = self._resolve_ref(ref, prior_outputs)
-
         # Write incoming context to scratchpad
         if self._scratchpad and prior_outputs:
             context_parts = []
@@ -117,7 +111,7 @@ class NodeRunner:
             message=message,
             session_id=session_id,
             node_id=self._node.id,
-            variables=merged_variables,
+            variables=variables,
         )
 
         # Write output summary to scratchpad
