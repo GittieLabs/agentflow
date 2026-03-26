@@ -9,10 +9,10 @@ Maps agentflow events to the Langfuse trace/span/generation hierarchy:
   TOOL_CALLED          → node_span.start_observation(as_type="tool") — nested tool call
   NODE_COMPLETED       → close node span
   WORKFLOW_COMPLETED   → close root span
+  DOMAIN_ROUTED        → span recording routing decision
   ERROR                → mark span as error and close
 
 Compatible with Langfuse SDK v4+.
-For Langfuse SDK v2/v3, pin: langfuse>=2.0,<3.0 and use the previous handler.
 
 Requirements:
     pip install langfuse>=4.0   (or gittielabs-agentflow[telemetry])
@@ -25,10 +25,21 @@ Usage:
     handler = LangfuseEventHandler(
         public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
         secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-        host=os.getenv("LANGFUSE_BASE_URL"),   # e.g. https://us.cloud.langfuse.com
+        host=os.getenv("LANGFUSE_BASE_URL"),
+        resource_attributes={"service.name": "my-app"},
     )
+
+    # Set per-request context before each workflow execution:
+    handler.set_trace_context(
+        session_id="signal:default-pipeline",
+        trace_name="signal:default-pipeline",
+        user_id="+14846491129",
+        tags=["signal", "default-pipeline"],
+        metadata={"channel": "signal", "git_sha": "abc123"},
+    )
+
     for event in (WORKFLOW_STARTED, WORKFLOW_COMPLETED, NODE_STARTED, NODE_COMPLETED,
-                  LLM_CALL_COMPLETED, TOOL_CALLED, ERROR):
+                  LLM_CALL_COMPLETED, TOOL_CALLED, DOMAIN_ROUTED, ERROR):
         bus.on(event, handler)
 
     # On shutdown:
@@ -40,6 +51,7 @@ import logging
 from typing import Any
 
 from agentflow.events import (
+    DOMAIN_ROUTED,
     ERROR,
     LLM_CALL_COMPLETED,
     NODE_COMPLETED,
@@ -60,6 +72,11 @@ class LangfuseEventHandler:
     - Node spans are keyed by node_id (the ``node`` value emitted by NODE_STARTED).
     - LLM generations and tool spans are children of the matching node span.
 
+    Trace context:
+    - Call ``set_trace_context()`` before each workflow execution to attach
+      session IDs, trace names, tags, and metadata to the root trace.
+    - Context is consumed (cleared) when WORKFLOW_STARTED fires.
+
     Thread safety: not thread-safe; designed for use within a single asyncio event loop.
     """
 
@@ -68,13 +85,16 @@ class LangfuseEventHandler:
         public_key: str,
         secret_key: str,
         host: str | None = None,
+        resource_attributes: dict[str, str] | None = None,
     ) -> None:
         """
         Args:
-            public_key: Langfuse public key (LANGFUSE_PUBLIC_KEY).
-            secret_key: Langfuse secret key (LANGFUSE_SECRET_KEY).
-            host:       Optional Langfuse instance URL. Defaults to Langfuse Cloud EU.
-                        Use ``https://us.cloud.langfuse.com`` for Langfuse Cloud US.
+            public_key:          Langfuse public key (LANGFUSE_PUBLIC_KEY).
+            secret_key:          Langfuse secret key (LANGFUSE_SECRET_KEY).
+            host:                Optional Langfuse instance URL. Defaults to Langfuse Cloud EU.
+                                 Use ``https://us.cloud.langfuse.com`` for Langfuse Cloud US.
+            resource_attributes: Static attributes attached to the Langfuse client instance.
+                                 Use for service.name, service.version, etc.
         """
         try:
             from langfuse import Langfuse
@@ -91,12 +111,47 @@ class LangfuseEventHandler:
         }
         if host:
             kwargs["host"] = host
+        if resource_attributes:
+            kwargs["resource_attributes"] = resource_attributes
 
         self._lf = Langfuse(**kwargs)
 
         # Active observations — keyed by workflow name (root spans) / node_id (child spans)
         self._root_spans: dict[str, Any] = {}   # workflow → root LangfuseSpan
         self._node_spans: dict[str, Any] = {}   # node_id  → child LangfuseSpan
+
+        # Per-request trace context — set by caller, consumed on WORKFLOW_STARTED
+        self._trace_ctx: dict[str, Any] | None = None
+
+    def set_trace_context(
+        self,
+        *,
+        session_id: str | None = None,
+        trace_name: str | None = None,
+        user_id: str | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Set conversation-level context for the next trace.
+
+        Call this before each workflow execution (e.g. in ``chat()``).
+        The context is consumed once when WORKFLOW_STARTED fires, then cleared.
+
+        Args:
+            session_id:  Groups traces in a Langfuse session (< 200 chars).
+                         Format: ``<channel>:<workflow_name>`` e.g. ``signal:default-pipeline``.
+            trace_name:  Overrides the root trace name (defaults to workflow name).
+            user_id:     Langfuse user identifier for the trace.
+            tags:        List of tags for filtering (e.g. ``["signal", "default-pipeline"]``).
+            metadata:    Extra metadata merged into the root span (channel, domain, git_sha, etc.).
+        """
+        self._trace_ctx = {
+            "session_id": session_id,
+            "trace_name": trace_name,
+            "user_id": user_id,
+            "tags": tags,
+            "metadata": metadata or {},
+        }
 
     async def on_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Dispatch an event to the appropriate handler. Errors are caught and logged."""
@@ -113,6 +168,8 @@ class LangfuseEventHandler:
                 self._handle_llm_call_completed(data)
             elif event_type == TOOL_CALLED:
                 self._handle_tool_called(data)
+            elif event_type == DOMAIN_ROUTED:
+                self._handle_domain_routed(data)
             elif event_type == ERROR:
                 self._handle_error(data)
         except Exception:
@@ -122,14 +179,33 @@ class LangfuseEventHandler:
 
     def _handle_workflow_started(self, data: dict[str, Any]) -> None:
         workflow = data.get("workflow", "unknown")
-        # Create a root span — Langfuse v4 treats the first observation as the trace root
-        root_span = self._lf.start_observation(
-            name=workflow,
-            as_type="span",
-            metadata=data,
-        )
+
+        # Consume trace context (set by caller before this workflow)
+        ctx = self._trace_ctx or {}
+        self._trace_ctx = None  # clear — one-shot per workflow
+
+        # Merge event data with caller-provided metadata
+        merged_metadata = {**data}
+        if ctx.get("metadata"):
+            merged_metadata.update(ctx["metadata"])
+
+        # Build root span kwargs
+        span_kwargs: dict[str, Any] = {
+            "name": ctx.get("trace_name") or workflow,
+            "as_type": "span",
+            "metadata": merged_metadata,
+        }
+        if ctx.get("session_id"):
+            span_kwargs["session_id"] = ctx["session_id"]
+        if ctx.get("user_id"):
+            span_kwargs["user_id"] = ctx["user_id"]
+        if ctx.get("tags"):
+            span_kwargs["tags"] = ctx["tags"]
+
+        root_span = self._lf.start_observation(**span_kwargs)
         self._root_spans[workflow] = root_span
-        logger.debug("Langfuse root span created: %s", workflow)
+        logger.debug("Langfuse root span created: %s (session=%s)",
+                     span_kwargs["name"], ctx.get("session_id"))
 
     def _handle_workflow_completed(self, data: dict[str, Any]) -> None:
         workflow = data.get("workflow", "unknown")
@@ -212,6 +288,22 @@ class LangfuseEventHandler:
             # Tool spans are fire-and-forget for now — end immediately
             # (TOOL_RESULT event could be used to close them properly)
             tool_span.end()
+
+    def _handle_domain_routed(self, data: dict[str, Any]) -> None:
+        """Record the routing decision as a span on the root trace."""
+        root_span = next(iter(self._root_spans.values()), None)
+        if root_span:
+            route_span = root_span.start_observation(
+                name=f"route:{data.get('target', 'unknown')}",
+                as_type="span",
+                metadata={
+                    "domain": data.get("domain"),
+                    "target": data.get("target"),
+                    "confidence": data.get("confidence"),
+                    "router": data.get("router"),
+                },
+            )
+            route_span.end()
 
     def _handle_error(self, data: dict[str, Any]) -> None:
         node = data.get("node", "unknown")
