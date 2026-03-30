@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gittielabs-agentflow"
-version = "0.7.1"
+version = "0.7.2"
 description = "Context engineering framework for multi-agent systems"
 readme = "README.md"
 requires-python = ">=3.11"

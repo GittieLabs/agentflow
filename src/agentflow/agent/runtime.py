@@ -15,6 +15,7 @@ from agentflow.agent.context import ContextAssembler
 from agentflow.config.schemas import AgentConfig
 from agentflow.events import EventBus, TOOL_CALLED, TOOL_RESULT, ERROR, LLM_CALL_STARTED, LLM_CALL_COMPLETED
 from agentflow.protocols import LLMProvider, ToolDispatcher
+from agentflow.tools.http_dispatcher import last_raw_tool_result
 from agentflow.types import AgentResponse, Message, NodeOutput, Role, ToolResult
 
 logger = logging.getLogger("agentflow.agent")
@@ -194,8 +195,13 @@ class AgentExecutor:
                     ))
 
                     if self._events:
+                        raw = last_raw_tool_result.get()
+                        last_raw_tool_result.set(None)
                         await self._events.emit(TOOL_RESULT, {
                             "tool": tc.name,
+                            "input": tc.input,
+                            "result": result_str,
+                            "raw_result": raw,
                             "result_length": len(result_str),
                             "is_error": is_error,
                         })

@@ -7,6 +7,7 @@ Compatible with the existing OpenClaw tools-server protocol:
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 from typing import Any
@@ -17,6 +18,14 @@ try:
     import httpx
 except ImportError:
     httpx = None  # type: ignore[assignment]
+
+# Asyncio-safe storage for the raw (pre-formatted) tool result dict.
+# Set by HTTPToolDispatcher.dispatch(), read by AgentExecutor to enrich
+# TOOL_RESULT events.  ContextVar is task-local so concurrent agent
+# executions never clobber each other.
+last_raw_tool_result: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "last_raw_tool_result", default=None,
+)
 
 
 class HTTPToolDispatcher:
@@ -49,6 +58,8 @@ class HTTPToolDispatcher:
 
             if data.get("success"):
                 result = data["result"]
+                # Stash raw result for TOOL_RESULT event enrichment
+                last_raw_tool_result.set(result if isinstance(result, dict) else None)
                 if self._result_formatter and isinstance(result, dict):
                     return self._result_formatter(result)
                 if isinstance(result, dict):
