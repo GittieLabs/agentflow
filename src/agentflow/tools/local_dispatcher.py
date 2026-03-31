@@ -5,8 +5,11 @@ Used for tools that run in the same process (e.g., Signal messaging, phone calls
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, Awaitable
+
+from agentflow.tools.http_dispatcher import last_raw_tool_result
 
 logger = logging.getLogger("agentflow.tools.local")
 
@@ -40,7 +43,15 @@ class LocalToolDispatcher:
             return f"Unknown local tool: {tool_name}"
 
         try:
-            return await handler(**tool_input)
+            result_str = await handler(**tool_input)
+            # Set raw_result so the TOOL_RESULT event includes structured data,
+            # matching the HTTP dispatcher behavior.
+            try:
+                raw = json.loads(result_str)
+                last_raw_tool_result.set(raw if isinstance(raw, dict) else None)
+            except (json.JSONDecodeError, TypeError):
+                last_raw_tool_result.set(None)
+            return result_str
         except Exception as exc:
             logger.error("Local tool %s error: %s", tool_name, exc)
             return f"Tool error: {exc}"
