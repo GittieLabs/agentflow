@@ -29,6 +29,7 @@ from agentflow.config import AgentConfig, ConfigLoader, DomainConfig, RouterConf
 from agentflow.events import (
     DOMAIN_ROUTED,
     EventBus,
+    HANDLER_RESULT,
     LLM_CALL_STARTED,
     LLM_CALL_COMPLETED,
     NODE_STARTED,
@@ -76,6 +77,7 @@ __all__ = [
     # Events
     "DOMAIN_ROUTED",
     "EventBus",
+    "HANDLER_RESULT",
     "LLM_CALL_STARTED",
     "LLM_CALL_COMPLETED",
     "NODE_STARTED",
@@ -135,4 +137,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'agentflow' has no attribute {name!r}")
 
 
-__version__ = "0.7.1"
+__version__ = "0.7.4"

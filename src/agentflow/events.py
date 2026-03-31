@@ -29,6 +29,7 @@ ERROR = "error"
 LLM_CALL_STARTED = "llm_call_started"
 LLM_CALL_COMPLETED = "llm_call_completed"
 FOREACH_ITERATION = "foreach_iteration"
+HANDLER_RESULT = "handler_result"
 
 
 class EventBus:

@@ -21,6 +21,7 @@ from agentflow.events import (
     NODE_STARTED,
     NODE_COMPLETED,
     FOREACH_ITERATION,
+    HANDLER_RESULT,
     ERROR,
 )
 from agentflow.types import NodeOutput
@@ -264,6 +265,18 @@ class WorkflowExecutor:
                 artifacts=result.artifacts,
                 metadata=result.metadata,
             )
+
+        # Emit handler result so observers can react to handler outputs
+        # (e.g., asset collectors capturing document URLs from artifacts).
+        if self._events:
+            await self._events.emit(HANDLER_RESULT, {
+                "node": node_id,
+                "handler": node.handler,
+                "text": result.text,
+                "artifacts": result.artifacts,
+                "metadata": result.metadata,
+            })
+
         return result
 
     # ------------------------------------------------------------------
