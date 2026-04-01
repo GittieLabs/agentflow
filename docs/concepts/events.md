@@ -51,7 +51,8 @@ AgentFlow defines these event type constants:
 | `NODE_STARTED` | `"node_started"` | A workflow node begins execution |
 | `NODE_COMPLETED` | `"node_completed"` | A workflow node finishes |
 | `TOOL_CALLED` | `"tool_called"` | An agent invokes a tool |
-| `TOOL_RESULT` | `"tool_result"` | A tool returns its result |
+| `TOOL_RESULT` | `"tool_result"` | A tool returns its result (includes `raw_result`) |
+| `HANDLER_RESULT` | `"handler_result"` | A code handler node finishes execution |
 | `LLM_CALL_STARTED` | `"llm_call_started"` | An LLM API call begins |
 | `LLM_CALL_COMPLETED` | `"llm_call_completed"` | An LLM API call finishes |
 | `ROUTER_DECISION` | `"router_decision"` | Router makes a routing decision |
@@ -66,7 +67,7 @@ Import constants directly:
 from agentflow import (
     WORKFLOW_STARTED, WORKFLOW_COMPLETED,
     NODE_STARTED, NODE_COMPLETED,
-    TOOL_CALLED, TOOL_RESULT,
+    TOOL_CALLED, TOOL_RESULT, HANDLER_RESULT,
     LLM_CALL_STARTED, LLM_CALL_COMPLETED,
     DOMAIN_ROUTED, ERROR,
 )
@@ -110,29 +111,69 @@ pip install "gittielabs-agentflow[telemetry]"
 
 ### Setup
 
-```python
+```bash
 export LANGFUSE_PUBLIC_KEY="pk-..."
 export LANGFUSE_SECRET_KEY="sk-..."
 ```
 
 ```python
-from agentflow import LangfuseEventHandler, EventBus
+from agentflow import (
+    LangfuseEventHandler, EventBus,
+    WORKFLOW_STARTED, WORKFLOW_COMPLETED,
+    NODE_STARTED, NODE_COMPLETED,
+    LLM_CALL_COMPLETED, TOOL_CALLED, DOMAIN_ROUTED, ERROR,
+)
 
 events = EventBus()
-langfuse_handler = LangfuseEventHandler()
+langfuse_handler = LangfuseEventHandler(
+    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
+    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
+    # Optional: tag the service in Langfuse
+    resource_attributes={"service.name": "my-app", "service.version": "1.0.0"},
+)
 
-# Subscribe to all relevant events
-for event_type in [
-    "workflow_started", "workflow_completed",
-    "node_started", "node_completed",
-    "llm_call_started", "llm_call_completed",
-    "tool_called", "tool_result",
-    "error",
-]:
+for event_type in (WORKFLOW_STARTED, WORKFLOW_COMPLETED, NODE_STARTED, NODE_COMPLETED,
+                   LLM_CALL_COMPLETED, TOOL_CALLED, DOMAIN_ROUTED, ERROR):
     events.on(event_type, langfuse_handler)
+
+# On shutdown, flush buffered events:
+langfuse_handler.flush()
 ```
 
+### Per-request trace context
+
+Call `set_trace_context()` before each workflow execution to attach conversation-level metadata to the Langfuse trace:
+
+```python
+langfuse_handler.set_trace_context(
+    session_id="signal:default-pipeline",   # groups traces into a session
+    trace_name="signal:default-pipeline",   # overrides the root trace name
+    user_id="+14155550100",                 # Langfuse user identifier
+    tags=["signal", "production"],
+    metadata={"channel": "signal", "git_sha": "abc123"},
+)
+
+# Now run the workflow — context is consumed on WORKFLOW_STARTED and cleared
+outputs = await executor.run(message, session_id=session_id)
+```
+
+Context is **one-shot**: it is applied to the next `WORKFLOW_STARTED` event, then cleared. Call `set_trace_context()` again before the next workflow if needed.
+
+### Langfuse span hierarchy
+
+| Langfuse observation | Created by |
+|----------------------|------------|
+| Root span (trace) | `WORKFLOW_STARTED` |
+| Node span | `NODE_STARTED` |
+| LLM generation | `LLM_CALL_COMPLETED` |
+| Tool span | `TOOL_CALLED` |
+| Routing span | `DOMAIN_ROUTED` |
+
 The `LangfuseEventHandler` is lazily imported to avoid requiring the `langfuse` package at import time. It is only loaded when accessed.
+
+### SDK compatibility
+
+`resource_attributes` requires Langfuse SDK ≥ 4.1. On older SDK versions the parameter is silently ignored — no error is raised.
 
 ## Custom Event Handler Example
 

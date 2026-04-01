@@ -49,10 +49,14 @@ Research pipeline with parallel processing.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | `str` | *required* | Unique node ID within the workflow |
-| `agent` | `str` | *required* | Name of the agent to execute |
+| `agent` | `str` | *required\** | Name of the agent to execute |
+| `handler` | `str` | `null` | Registered Python function name (alternative to `agent`) |
 | `next` | `str \| list[str] \| null` | `null` | Downstream node(s) |
 | `mode` | `str` | `"sync"` | Execution mode |
 | `inputs` | `dict[str, str]` | `{}` | Input mappings from upstream outputs |
+| `foreach` | `str` | `null` | Dotted ref to a list artifact — runs the node once per item |
+
+\* Either `agent` or `handler` is required, but not both.
 
 ## Execution Modes
 
@@ -187,6 +191,107 @@ predecessor.  The executor passes all completed outputs to each node, so you
 can reference a grandparent or sibling node directly.  That said, always add
 the corresponding DAG edge (`next:` entry) so the execution order is
 guaranteed.
+
+## Code Handler Nodes
+
+Handler nodes run a registered Python function instead of an LLM call. Use them for deterministic processing steps — data transformation, validation, formatting — where an LLM is unnecessary.
+
+### Defining a handler node
+
+Set `handler: <name>` on the node instead of `agent: <name>`:
+
+```yaml
+nodes:
+  - id: extract
+    agent: extractor
+    next: [normalize]
+  - id: normalize
+    handler: normalize_text
+    inputs:
+      message: "extract.text"
+    next: [report]
+  - id: report
+    agent: reporter
+    inputs:
+      message: "normalize.text"
+```
+
+### Implementing a handler function
+
+A handler is an async function with signature `(message: str, prior_outputs: dict) -> NodeOutput`:
+
+```python
+from agentflow.types import NodeOutput
+
+async def normalize_text(message: str, prior_outputs: dict) -> NodeOutput:
+    cleaned = message.strip().lower()
+    return NodeOutput(
+        node_id="normalize",
+        agent_id="normalize_text",
+        text=cleaned,
+    )
+```
+
+### Registering handlers with WorkflowExecutor
+
+Pass a `handlers` dict to `WorkflowExecutor`:
+
+```python
+executor = WorkflowExecutor(
+    config=wf_config,
+    runner_factory=runner_factory,
+    handlers={"normalize_text": normalize_text},
+)
+```
+
+Handler nodes support all the same `inputs` patterns as agent nodes, including named inputs with labeled sections.
+
+Handler nodes emit a `HANDLER_RESULT` event after execution so observers (e.g. asset collectors) can react to handler outputs the same way they react to `TOOL_RESULT` events.
+
+## Foreach Iteration
+
+A node with `foreach` set runs its body once per item in a list artifact from a prior node. Results are collected into `artifacts["results"]` on the node's output.
+
+### Defining a foreach node
+
+```yaml
+nodes:
+  - id: extract
+    handler: produce_list
+    next: [process]
+  - id: process
+    agent: item_processor
+    foreach: "extract.artifacts.items"
+```
+
+### Loop variables
+
+Each iteration receives these variables injected into its message:
+
+| Variable | Description |
+|----------|-------------|
+| `loop_item` | The current item value |
+| `loop_index` | Zero-based iteration index |
+| `loop_total` | Total number of items |
+| `loop_prior_results` | Results accumulated so far in this foreach run |
+
+### Combining handler and foreach
+
+A handler node can also use `foreach` — the handler function is called once per item:
+
+```yaml
+- id: batch_transform
+  handler: transform_item
+  foreach: "source.artifacts.items"
+```
+
+```python
+async def transform_item(message: str, prior_outputs: dict) -> NodeOutput:
+    # message contains the loop variables for this iteration
+    return NodeOutput(node_id="batch_transform", agent_id="transform_item", text=message.upper())
+```
+
+If the foreach reference resolves to `None` or an empty list, the node is skipped and returns an empty result rather than raising an error.
 
 ## WorkflowDAG
 

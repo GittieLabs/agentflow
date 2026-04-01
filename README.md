@@ -17,10 +17,12 @@ AgentFlow is a framework-agnostic toolkit for building multi-agent workflows usi
 - **Pluggable LLM providers** -- Anthropic Claude, OpenAI GPT, Google Gemini, or any OpenAI-compatible API
 - **Hybrid routing** -- YAML rule matching with LLM fallback, plus hierarchical domain routing
 - **DAG-based workflows** -- Sync, parallel, and async node execution with input mapping
+- **Code handler nodes** -- Register Python functions as workflow steps for deterministic processing without LLM calls
+- **Foreach iteration** -- Run any node (agent or handler) once per item in a list artifact
 - **Session management** -- Scratchpads, multi-user history, and artifact storage
 - **Memory system** -- File-based and vector search (embedding-agnostic)
-- **Tool registry** -- Local and HTTP tool dispatchers
-- **Event-driven observability** -- EventBus with Langfuse telemetry integration
+- **Tool registry** -- Local and HTTP tool dispatchers with structured `raw_result` in events
+- **Event-driven observability** -- EventBus with Langfuse telemetry (session, trace context, resource attributes)
 
 ## Install
 
@@ -165,7 +167,8 @@ Full documentation is available at **[gittielabs.github.io/agentflow](https://gi
 - [Context file reference](https://gittielabs.github.io/agentflow/concepts/context-files/)
 - [Provider configuration](https://gittielabs.github.io/agentflow/concepts/providers/)
 - [Routing & domain routing](https://gittielabs.github.io/agentflow/concepts/routing/)
-- [Workflow execution](https://gittielabs.github.io/agentflow/concepts/workflows/)
+- [Workflow execution (incl. handler nodes & foreach)](https://gittielabs.github.io/agentflow/concepts/workflows/)
+- [Events & Langfuse telemetry](https://gittielabs.github.io/agentflow/concepts/events/)
 - [Multi-agent pipeline guide](https://gittielabs.github.io/agentflow/guides/multi-agent-pipeline/)
 - [Changelog](https://gittielabs.github.io/agentflow/changelog/)
 
