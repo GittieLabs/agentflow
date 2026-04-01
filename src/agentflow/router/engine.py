@@ -119,8 +119,11 @@ class RouterEngine:
             candidate = response.text.strip().lower()
 
             # Validate the LLM's choice is actually in our target list
+            # Normalize both sides: replace spaces with underscores for comparison
+            norm_candidate = candidate.replace(" ", "_").replace("-", "_")
             for target in self._available_targets:
-                if target.lower() == candidate:
+                norm_target = target.lower().replace(" ", "_").replace("-", "_")
+                if norm_target == norm_candidate or target.lower() == candidate:
                     return target
 
             logger.warning("LLM routing returned unknown target: %s", candidate)
