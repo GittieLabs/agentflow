@@ -195,23 +195,31 @@ class LangfuseEventHandler:
         if ctx.get("metadata"):
             merged_metadata.update(ctx["metadata"])
 
-        # Build root span kwargs
-        span_kwargs: dict[str, Any] = {
+        # Build root trace kwargs
+        trace_kwargs: dict[str, Any] = {
             "name": ctx.get("trace_name") or workflow,
-            "as_type": "span",
             "metadata": merged_metadata,
         }
         if ctx.get("session_id"):
-            span_kwargs["session_id"] = ctx["session_id"]
+            trace_kwargs["session_id"] = ctx["session_id"]
         if ctx.get("user_id"):
-            span_kwargs["user_id"] = ctx["user_id"]
+            trace_kwargs["user_id"] = ctx["user_id"]
         if ctx.get("tags"):
-            span_kwargs["tags"] = ctx["tags"]
+            trace_kwargs["tags"] = ctx["tags"]
 
-        root_span = self._lf.start_observation(**span_kwargs)
+        try:
+            # Langfuse v2/v3+ uses trace() for the root object
+            root_span = self._lf.trace(**trace_kwargs)
+        except (AttributeError, TypeError):
+            # Fallback for very old SDKs or if trace() is somehow different
+            trace_kwargs["as_type"] = "span"
+            if "session_id" in trace_kwargs:
+                del trace_kwargs["session_id"] # session_id not supported on spans
+            root_span = self._lf.start_observation(**trace_kwargs)
+
         self._root_spans[workflow] = root_span
         logger.debug("Langfuse root span created: %s (session=%s)",
-                     span_kwargs["name"], ctx.get("session_id"))
+                     trace_kwargs["name"], ctx.get("session_id"))
 
     def _handle_workflow_completed(self, data: dict[str, Any]) -> None:
         workflow = data.get("workflow", "unknown")
