@@ -126,6 +126,17 @@ class RouterEngine:
                 if norm_target == norm_candidate or target.lower() == candidate:
                     return target
 
+            # Prefix fallback: if the LLM truncated the name (e.g. "contract_"),
+            # match if it's a unique prefix of exactly one target.
+            if len(norm_candidate) >= 4:
+                prefix_matches = [
+                    t for t in self._available_targets
+                    if t.lower().replace(" ", "_").replace("-", "_").startswith(norm_candidate)
+                ]
+                if len(prefix_matches) == 1:
+                    logger.info("LLM routing matched by prefix: %s → %s", candidate, prefix_matches[0])
+                    return prefix_matches[0]
+
             logger.warning("LLM routing returned unknown target: %s", candidate)
             return None
 
