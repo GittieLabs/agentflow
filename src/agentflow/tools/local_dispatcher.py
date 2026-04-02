@@ -45,12 +45,16 @@ class LocalToolDispatcher:
         try:
             result_str = await handler(**tool_input)
             # Set raw_result so the TOOL_RESULT event includes structured data,
-            # matching the HTTP dispatcher behavior.
-            try:
-                raw = json.loads(result_str)
-                last_raw_tool_result.set(raw if isinstance(raw, dict) else None)
-            except (json.JSONDecodeError, TypeError):
-                last_raw_tool_result.set(None)
+            # matching the HTTP dispatcher behavior.  If the handler already
+            # set the ContextVar (e.g. because it has access to the raw dict
+            # before formatting), honour that value instead of overwriting it
+            # with a potentially lossy json.loads() of the formatted string.
+            if last_raw_tool_result.get() is None:
+                try:
+                    raw = json.loads(result_str)
+                    last_raw_tool_result.set(raw if isinstance(raw, dict) else None)
+                except (json.JSONDecodeError, TypeError):
+                    pass  # leave as None — handler didn't set it either
             return result_str
         except Exception as exc:
             logger.error("Local tool %s error: %s", tool_name, exc)
