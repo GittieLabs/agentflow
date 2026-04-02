@@ -250,7 +250,7 @@ Handler nodes emit a `HANDLER_RESULT` event after execution so observers (e.g. a
 
 ## Foreach Iteration
 
-A node with `foreach` set runs its body once per item in a list artifact from a prior node. Results are collected into `artifacts["results"]` on the node's output.
+A node with `foreach` set runs its body once per item in a list artifact from a prior node. Results are collected into `artifacts["results"]` on the node's output. This is heavily utilized when parsing batched data like lists of contracts, lists of candidates to review, or parallel document summaries.
 
 ### Defining a foreach node
 
@@ -292,6 +292,8 @@ async def transform_item(message: str, prior_outputs: dict) -> NodeOutput:
 ```
 
 If the foreach reference resolves to `None` or an empty list, the node is skipped and returns an empty result rather than raising an error.
+
+For a comprehensive real-world example, see the [Foreach Iteration Guide](../guides/foreach-workflow.md).
 
 ## WorkflowDAG
 
@@ -364,12 +366,13 @@ Workflow execution emits events through the `EventBus`:
 | `NODE_STARTED` | A node begins execution |
 | `NODE_COMPLETED` | A node finishes execution |
 
-## Orchestration
+## Orchestration vs Static Workflows
 
-For complex tasks that require dynamic planning, the orchestration layer builds on workflows:
+For complex tasks that require dynamic planning, the orchestration layer builds on workflows. While `WorkflowDAG` operates on a predefined graph (e.g. static, repeated operational tasks like generic resume digestion), orchestration makes sense when the tasks are highly variable. You might need to select from a suite of tools, retrieve dynamic context iteratively, and spawn arbitrary agents.
 
-- `ComplexityClassifier` -- determines whether a request needs a single agent or a multi-step plan
-- `Plan` / `PlanStep` -- typed representations of multi-step execution plans
+The orchestration layer introduces:
+- `ComplexityClassifier` -- determines whether a request needs a single agent or a multi-step dynamic plan
+- `Plan` / `PlanStep` -- typed representations of multi-step execution plans created by an autonomous planner
 - `DAGExecutor` -- executes plans by resolving inter-step dependencies and running independent steps concurrently
 
 ```python

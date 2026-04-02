@@ -71,9 +71,13 @@ nav:
       - Events & Telemetry: concepts/events.md
   - Guides:
       - Multi-Agent Pipeline: guides/multi-agent-pipeline.md
+      - Foreach Workflow (Resumes): guides/foreach-workflow.md
       - Custom LLM Provider: guides/custom-provider.md
       - Domain Routing: guides/domain-routing.md
-  - API Reference: api/index.md
+  - API Reference:
+      - Overview: api/index.md
+      - Core Types: api/types.md
+      - Config Schemas: api/config.md
   - Changelog: changelog.md
 
 extra:

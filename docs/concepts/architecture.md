@@ -96,6 +96,22 @@ WorkflowExecutor / AgentExecutor
 NodeOutput
 ```
 
+## Advanced Orchestration
+
+While standard `WorkflowExecutor` flows are defined via static YAML DAGs, some tasks require dynamic planning because the execution graph cannot be predicted ahead of time. This is where the `orchestration` module comes into play.
+
+The orchestration flow goes a step beyond DAG static paths:
+1. `ComplexityClassifier` intercepts the user request and determines if it requires a sequence of tool calls or specific agents to be orchestrated dynamically.
+2. If multi-step planning is needed, an autonomous `plan` agent formulates a sequence of steps (as a typed `PlanStep` array).
+3. `DAGExecutor` parses this dynamic plan into an ad-hoc dependency graph and executes the disjointed steps.
+
+**When to use Orchestration:**
+- The task is highly variable and depends on iterative tool results (e.g. general internet search workflows where finding X dictates whether to search for Y or Z).
+- You want an autonomous planner agent to route directly to multiple tools without requiring you to map out every single permutations in a `*.workflow.md` file.
+
+**When to use Static Workflows:**
+- The task is predictable, operational, and linear (e.g., standard Resume Conversions, daily batch reports, parsing a static PDF structure).
+
 ## Key Design Decisions
 
 **Configuration as Markdown.** Agent definitions, workflows, routing rules, and context all live in `.md` files with YAML front-matter. This keeps configuration human-readable, version-controllable, and easy to review in PRs.

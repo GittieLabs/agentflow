@@ -116,7 +116,12 @@ from agentflow import HTTPToolDispatcher
 dispatcher = HTTPToolDispatcher(base_url="https://api.example.com")
 ```
 
-The dispatcher sends POST requests to `{base_url}/{tool_name}` with the tool input as JSON body.
+The dispatcher sends POST requests to `{base_url}/{tool_name}` with the tool input as JSON body. This is ideal for distributed architectures where tools are hosted on separate microservices or serverless functions (like AWS Lambda). 
+
+### When to choose Local vs HTTP Dispatcher?
+
+- **Use `LocalToolDispatcher`** when you want zero-network latency overhead, need tools to directly manipulate your local database or state map in memory, or when running everything in a monolithic deployment.
+- **Use `HTTPToolDispatcher`** when your tools require heavy isolated compute, are written in languages other than Python (e.g. Node.js microservices), or if you want strict security boundaries around what arbitrary code your LLM agents can trigger.
 
 ## Referencing Tools in Agent Config
 
@@ -161,6 +166,14 @@ During agent execution, the `AgentExecutor` runs a tool loop:
 4. Repeat until the LLM responds without tool calls or `max_tool_rounds` is reached
 
 The `max_tool_rounds` setting in agent config (default: 6) prevents infinite tool loops.
+
+### How Tool Results Drive Reasoning
+
+Tool results are appended into the session history using the `TOOL_RESULT` role. As iterations continue, agents reason over past tool outputs to formulate their next step. 
+
+For instance, an agent might first call a `list_documents` tool. The registry dispatches the call and returns a JSON string of available document paths. During the next iteration of the loop, the agent reads this `ToolResult` and logically decides to call a `read_document` tool loop multiple times based on the parsed list.
+
+Because `ToolResult` outputs can sometimes be very long and consume your token window, it is highly recommended to summarize outputs within your local handler function before returning them (e.g. truncating a web search).
 
 ## Tool Types
 

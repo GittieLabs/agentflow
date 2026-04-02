@@ -89,16 +89,28 @@ The `ContextAssembler` automatically loads summary files from upstream nodes and
 
 ## ArtifactStore
 
-`ArtifactStore` manages named artifacts (files, data, etc.) produced during agent execution:
+`ArtifactStore` manages named artifacts (files, structured data, JSON blobs, etc.) produced during agent execution. While `Scratchpads` are designed explicitly for unstructured "thinking notes" sent back to the LLM context, `ArtifactStore` is geared towards persistent structured data and raw files.
 
 ```python
 from agentflow import ArtifactStore, FileSystemStorage
 
 storage = FileSystemStorage("./data")
 artifacts = ArtifactStore(storage=storage, session_id="session-123")
+
+# Store a structured JSON artifact
+await artifacts.write_json("extracted_resume_data", {"name": "Jane", "skills": ["Python"]})
+
+# Store a raw file artifact
+await artifacts.write_binary("original_document.pdf", pdf_bytes)
 ```
 
-Artifacts are referenced in `NodeOutput.artifacts` and can be passed between nodes via input mappings.
+Artifacts are referenced in `NodeOutput.artifacts` and can be passed between nodes via input mappings (such as loops using the `foreach` keyword).
+
+### When to use Artifacts vs Scratchpads?
+
+1. **Structured Data Sharing:** Use artifacts when a node outputs highly structured data (like JSON or lists) that must be iterated over by a downstream `foreach` node, or digested by an API. Use scratchpads when you just want downstream agents to read conversational summaries.
+2. **File Persistence:** Artifacts should be used to persist binary files, pdfs, images, or exportable final reports (like DOCX files).
+3. **Preventing Context Window Bloat:** If a tool output is 1MB of raw JSON data, injecting that into a scratchpad will bloat the LLM context and likely cause token limit errors. Save it as an artifact and only provide the LLM with the artifact's metadata or subset.
 
 ## Multi-User History
 
