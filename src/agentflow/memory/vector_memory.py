@@ -1,12 +1,15 @@
 """
-Vector memory backend using Qdrant.
+Vector memory backend with pluggable vector stores.
 
 Implements the MemoryStore protocol with semantic search powered by
-vector embeddings. Embedding-agnostic — the caller must provide their
-own embed function and dimension.
+vector embeddings. Both embedding-agnostic and backend-agnostic — the
+caller provides their own embed function and a VectorBackend instance
+(Qdrant, LanceDB, ChromaDB, etc.).
 
-Requires:
-    pip install agentflow[vector]
+Requires one of:
+    pip install agentflow[vector]    # Qdrant
+    pip install agentflow[lancedb]   # LanceDB
+    pip install agentflow[chroma]    # ChromaDB
 """
 from __future__ import annotations
 
@@ -15,20 +18,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 
-logger = logging.getLogger("agentflow.memory.vector")
+from agentflow.protocols import VectorBackend
 
-try:
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import (
-        Distance,
-        PointStruct,
-        VectorParams,
-    )
-except ImportError:
-    QdrantClient = None  # type: ignore[assignment,misc]
-    PointStruct = None  # type: ignore[assignment,misc]
-    VectorParams = None  # type: ignore[assignment,misc]
-    Distance = None  # type: ignore[assignment,misc]
+logger = logging.getLogger("agentflow.memory.vector")
 
 # Type for an async embedding function: text -> vector
 EmbedFn = Callable[[str], Awaitable[list[float]]]
@@ -36,15 +28,18 @@ EmbedFn = Callable[[str], Awaitable[list[float]]]
 
 class VectorMemory:
     """
-    MemoryStore implementation using Qdrant for semantic vector search.
+    MemoryStore implementation using a pluggable VectorBackend for semantic search.
 
     Embedding-agnostic: the caller must supply ``embed_fn`` (an async
     function ``str -> list[float]``) and ``embedding_dim`` (the vector
-    size produced by that function). This keeps the framework decoupled
-    from any particular embedding provider.
+    size produced by that function).
+
+    Backend-agnostic: the caller must supply a ``backend`` that implements
+    the ``VectorBackend`` protocol (QdrantBackend, LanceDBBackend,
+    ChromaBackend, or any custom implementation).
 
     Stores text with embeddings for semantic retrieval. Each memory entry
-    is a Qdrant point with:
+    has:
     - vector: embedding of the content text
     - payload: {content, created_at, agent, ...metadata}
     """
@@ -54,55 +49,22 @@ class VectorMemory:
         *,
         embed_fn: EmbedFn,
         embedding_dim: int,
-        qdrant_url: str = "http://localhost:6333",
-        api_key: str | None = None,
+        backend: VectorBackend,
         collection: str = "agentflow_memories",
         agent: str = "default",
     ) -> None:
-        if QdrantClient is None:
-            raise ImportError("Install qdrant-client: pip install agentflow[vector]")
-
         if not callable(embed_fn):
             raise TypeError("embed_fn must be an async callable (str -> list[float])")
         if embedding_dim < 1:
             raise ValueError("embedding_dim must be a positive integer")
 
-        # Strip trailing slashes and protocol-less URLs
-        if not qdrant_url.startswith("http"):
-            qdrant_url = f"http://{qdrant_url}"
-
-        self._client = QdrantClient(url=qdrant_url, api_key=api_key)
+        self._backend = backend
         self._collection = collection
         self._embed_fn = embed_fn
         self._embedding_dim = embedding_dim
         self._agent = agent
 
-        # Ensure collection exists
-        self._ensure_collection()
-
-    def _ensure_collection(self) -> None:
-        """Create the Qdrant collection if it doesn't exist, or recreate if dimension changed."""
-        collections = [c.name for c in self._client.get_collections().collections]
-        if self._collection in collections:
-            # Check if existing collection has the right vector dimension
-            info = self._client.get_collection(self._collection)
-            existing_dim = info.config.params.vectors.size  # type: ignore[union-attr]
-            if existing_dim != self._embedding_dim:
-                logger.warning(
-                    "Qdrant collection '%s' has dim=%d but expected dim=%d — recreating",
-                    self._collection, existing_dim, self._embedding_dim,
-                )
-                self._client.delete_collection(self._collection)
-            else:
-                return  # collection exists with correct dimensions
-        logger.info("Creating Qdrant collection: %s (dim=%d)", self._collection, self._embedding_dim)
-        self._client.create_collection(
-            collection_name=self._collection,
-            vectors_config=VectorParams(
-                size=self._embedding_dim,
-                distance=Distance.COSINE,
-            ),
-        )
+        self._backend.ensure_collection(self._collection, self._embedding_dim)
 
     async def store(self, content: str, metadata: dict[str, Any] | None = None) -> str:
         """
@@ -120,10 +82,7 @@ class VectorMemory:
             **(metadata or {}),
         }
 
-        self._client.upsert(
-            collection_name=self._collection,
-            points=[PointStruct(id=point_id, vector=vector, payload=payload)],
-        )
+        self._backend.upsert(self._collection, point_id, vector, payload)
 
         logger.debug("Stored vector memory: %s (agent=%s)", point_id, self._agent)
         return point_id
@@ -136,26 +95,18 @@ class VectorMemory:
         """
         query_vector = await self._embed_fn(query)
 
-        results = self._client.query_points(
-            collection_name=self._collection,
-            query=query_vector,
-            limit=limit,
-            with_payload=True,
-        )
+        results = self._backend.query(self._collection, query_vector, limit)
 
         return [
             {
-                "content": point.payload.get("content", ""),
-                "id": str(point.id),
-                "score": point.score,
-                **{k: v for k, v in point.payload.items() if k != "content"},
+                "content": r["payload"].get("content", ""),
+                "id": r["id"],
+                "score": r["score"],
+                **{k: v for k, v in r["payload"].items() if k != "content"},
             }
-            for point in results.points
+            for r in results
         ]
 
     async def delete(self, point_id: str) -> None:
         """Delete a specific memory by point ID."""
-        self._client.delete(
-            collection_name=self._collection,
-            points_selector=[point_id],
-        )
+        self._backend.delete_points(self._collection, [point_id])

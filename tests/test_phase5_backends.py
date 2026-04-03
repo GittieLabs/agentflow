@@ -147,106 +147,61 @@ class TestS3Storage:
             assert storage._bucket == "mybucket"
 
 
-# ── VectorMemory ─────────────────────────────────────────────────────────────
+# ── VectorMemory (backend-agnostic) ─────────────────────────────────────────
 
 
 class TestVectorMemory:
-    """Test VectorMemory with mocked Qdrant client and embedding function."""
+    """Test VectorMemory with a mock VectorBackend — no Qdrant patching needed."""
 
     def _make_memory(self):
-        """Create VectorMemory with mocked dependencies."""
         from agentflow.memory.vector_memory import VectorMemory
 
         mock_embed = AsyncMock(return_value=[0.1] * 768)
+        mock_backend = MagicMock()
 
-        # Mock all qdrant imports at the module level
-        mock_point_struct = MagicMock()
-        with (
-            patch("agentflow.memory.vector_memory.QdrantClient") as MockQdrant,
-            patch("agentflow.memory.vector_memory.PointStruct", mock_point_struct),
-        ):
-            mock_qdrant = MagicMock()
-            MockQdrant.return_value = mock_qdrant
-
-            # Collection already exists with matching dimensions
-            mock_collection = MagicMock()
-            mock_collection.name = "agentflow_memories"
-            mock_collections_resp = MagicMock()
-            mock_collections_resp.collections = [mock_collection]
-            mock_qdrant.get_collections.return_value = mock_collections_resp
-            mock_info = MagicMock()
-            mock_info.config.params.vectors.size = 768
-            mock_qdrant.get_collection.return_value = mock_info
-
-            memory = VectorMemory(
-                qdrant_url="http://localhost:6333",
-                collection="agentflow_memories",
-                embed_fn=mock_embed,
-                embedding_dim=768,
-                agent="test_agent",
-            )
-            return memory, mock_qdrant, mock_embed, mock_point_struct
+        memory = VectorMemory(
+            embed_fn=mock_embed,
+            embedding_dim=768,
+            backend=mock_backend,
+            collection="agentflow_memories",
+            agent="test_agent",
+        )
+        return memory, mock_backend, mock_embed
 
     @pytest.mark.asyncio
     async def test_store(self):
-        from agentflow.memory.vector_memory import VectorMemory
+        memory, mock_backend, mock_embed = self._make_memory()
 
-        mock_embed = AsyncMock(return_value=[0.1] * 768)
-        mock_point_struct = MagicMock()
+        point_id = await memory.store("Remember this fact.", metadata={"source": "test"})
+        assert isinstance(point_id, str)
+        assert len(point_id) == 36  # UUID format
 
-        with (
-            patch("agentflow.memory.vector_memory.QdrantClient") as MockQdrant,
-            patch("agentflow.memory.vector_memory.PointStruct", mock_point_struct),
-        ):
-            mock_qdrant = MagicMock()
-            MockQdrant.return_value = mock_qdrant
-
-            mock_collection = MagicMock()
-            mock_collection.name = "agentflow_memories"
-            mock_collections_resp = MagicMock()
-            mock_collections_resp.collections = [mock_collection]
-            mock_qdrant.get_collections.return_value = mock_collections_resp
-            mock_info = MagicMock()
-            mock_info.config.params.vectors.size = 768
-            mock_qdrant.get_collection.return_value = mock_info
-
-            memory = VectorMemory(
-                qdrant_url="http://localhost:6333",
-                collection="agentflow_memories",
-                embed_fn=mock_embed,
-                embedding_dim=768,
-                agent="test_agent",
-            )
-
-            point_id = await memory.store("Remember this fact.", metadata={"source": "test"})
-            assert isinstance(point_id, str)
-            assert len(point_id) == 36  # UUID format
-
-            mock_embed.assert_called_once_with("Remember this fact.")
-            mock_qdrant.upsert.assert_called_once()
-
-            # Verify PointStruct was called with correct args
-            mock_point_struct.assert_called_once()
-            call_kwargs = mock_point_struct.call_args.kwargs
-            assert call_kwargs["payload"]["content"] == "Remember this fact."
-            assert call_kwargs["payload"]["agent"] == "test_agent"
-            assert call_kwargs["payload"]["source"] == "test"
+        mock_embed.assert_called_once_with("Remember this fact.")
+        mock_backend.upsert.assert_called_once()
+        call_args = mock_backend.upsert.call_args
+        assert call_args[0][0] == "agentflow_memories"  # collection
+        assert call_args[0][1] == point_id  # point_id
+        assert call_args[0][2] == [0.1] * 768  # vector
+        payload = call_args[0][3]
+        assert payload["content"] == "Remember this fact."
+        assert payload["agent"] == "test_agent"
+        assert payload["source"] == "test"
 
     @pytest.mark.asyncio
     async def test_search(self):
-        memory, mock_qdrant, mock_embed, _ = self._make_memory()
+        memory, mock_backend, mock_embed = self._make_memory()
 
-        mock_point = MagicMock()
-        mock_point.id = "point-123"
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "content": "User likes blue.",
-            "agent": "test_agent",
-            "created_at": "2026-03-09T00:00:00Z",
-        }
-        mock_results = MagicMock()
-        mock_results.points = [mock_point]
-        mock_qdrant.query_points.return_value = mock_results
+        mock_backend.query.return_value = [
+            {
+                "id": "point-123",
+                "score": 0.95,
+                "payload": {
+                    "content": "User likes blue.",
+                    "agent": "test_agent",
+                    "created_at": "2026-03-09T00:00:00Z",
+                },
+            }
+        ]
 
         results = await memory.search("favorite color", limit=3)
         assert len(results) == 1
@@ -255,52 +210,260 @@ class TestVectorMemory:
         assert results[0]["id"] == "point-123"
 
         mock_embed.assert_called_once_with("favorite color")
-        mock_qdrant.query_points.assert_called_once_with(
-            collection_name="agentflow_memories",
-            query=[0.1] * 768,
-            limit=3,
-            with_payload=True,
+        mock_backend.query.assert_called_once_with(
+            "agentflow_memories", [0.1] * 768, 3
         )
 
     @pytest.mark.asyncio
     async def test_delete(self):
-        memory, mock_qdrant, _, _ = self._make_memory()
+        memory, mock_backend, _ = self._make_memory()
         await memory.delete("point-456")
-        mock_qdrant.delete.assert_called_once_with(
-            collection_name="agentflow_memories",
-            points_selector=["point-456"],
+        mock_backend.delete_points.assert_called_once_with(
+            "agentflow_memories", ["point-456"]
         )
 
-    def test_creates_collection_if_missing(self):
-        """If the collection doesn't exist, it should be created."""
+    def test_ensure_collection_called_on_init(self):
         from agentflow.memory.vector_memory import VectorMemory
 
-        mock_embed = AsyncMock(return_value=[0.1] * 768)
+        mock_backend = MagicMock()
+        VectorMemory(
+            embed_fn=AsyncMock(return_value=[0.1] * 768),
+            embedding_dim=768,
+            backend=mock_backend,
+            collection="new_collection",
+        )
+        mock_backend.ensure_collection.assert_called_once_with("new_collection", 768)
+
+
+# ── QdrantBackend ───────────────────────────────────────────────────────────
+
+
+class TestQdrantBackend:
+    """Test QdrantBackend with mocked qdrant-client."""
+
+    def _make_backend(self):
+        from agentflow.memory.backends.qdrant_backend import QdrantBackend
 
         with (
-            patch("agentflow.memory.vector_memory.QdrantClient") as MockQdrant,
-            patch("agentflow.memory.vector_memory.PointStruct", MagicMock()),
-            patch("agentflow.memory.vector_memory.VectorParams") as MockVP,
-            patch("agentflow.memory.vector_memory.Distance") as MockDist,
+            patch("agentflow.memory.backends.qdrant_backend.QdrantClient") as MockQdrant,
         ):
             mock_qdrant = MagicMock()
             MockQdrant.return_value = mock_qdrant
+            backend = QdrantBackend(url="http://localhost:6333")
+            return backend, mock_qdrant
 
-            # No collections exist
+    def test_ensure_collection_creates_when_missing(self):
+        from agentflow.memory.backends.qdrant_backend import QdrantBackend
+
+        with (
+            patch("agentflow.memory.backends.qdrant_backend.QdrantClient") as MockQdrant,
+            patch("agentflow.memory.backends.qdrant_backend.VectorParams") as MockVP,
+            patch("agentflow.memory.backends.qdrant_backend.Distance") as MockDist,
+        ):
+            mock_qdrant = MagicMock()
+            MockQdrant.return_value = mock_qdrant
+            backend = QdrantBackend(url="http://localhost:6333")
+
             mock_collections_resp = MagicMock()
             mock_collections_resp.collections = []
             mock_qdrant.get_collections.return_value = mock_collections_resp
 
-            VectorMemory(
-                qdrant_url="http://localhost:6333",
-                collection="new_collection",
-                embed_fn=mock_embed,
-                embedding_dim=768,
-            )
-
+            backend.ensure_collection("my_coll", 768)
             mock_qdrant.create_collection.assert_called_once()
             call_kwargs = mock_qdrant.create_collection.call_args.kwargs
-            assert call_kwargs["collection_name"] == "new_collection"
+            assert call_kwargs["collection_name"] == "my_coll"
+
+    def test_ensure_collection_skips_when_exists(self):
+        backend, mock_qdrant = self._make_backend()
+        mock_coll = MagicMock()
+        mock_coll.name = "my_coll"
+        mock_collections_resp = MagicMock()
+        mock_collections_resp.collections = [mock_coll]
+        mock_qdrant.get_collections.return_value = mock_collections_resp
+        mock_info = MagicMock()
+        mock_info.config.params.vectors.size = 768
+        mock_qdrant.get_collection.return_value = mock_info
+
+        backend.ensure_collection("my_coll", 768)
+        mock_qdrant.create_collection.assert_not_called()
+
+    def test_upsert(self):
+        from agentflow.memory.backends.qdrant_backend import QdrantBackend
+
+        with (
+            patch("agentflow.memory.backends.qdrant_backend.QdrantClient") as MockQdrant,
+            patch("agentflow.memory.backends.qdrant_backend.PointStruct") as MockPS,
+        ):
+            mock_qdrant = MagicMock()
+            MockQdrant.return_value = mock_qdrant
+            backend = QdrantBackend(url="http://localhost:6333")
+
+            backend.upsert("coll", "id-1", [0.1, 0.2], {"content": "hello"})
+            mock_qdrant.upsert.assert_called_once()
+            MockPS.assert_called_once_with(id="id-1", vector=[0.1, 0.2], payload={"content": "hello"})
+
+    def test_query(self):
+        backend, mock_qdrant = self._make_backend()
+        mock_point = MagicMock()
+        mock_point.id = "p-1"
+        mock_point.score = 0.9
+        mock_point.payload = {"content": "test"}
+        mock_results = MagicMock()
+        mock_results.points = [mock_point]
+        mock_qdrant.query_points.return_value = mock_results
+
+        results = backend.query("coll", [0.1], 5)
+        assert len(results) == 1
+        assert results[0]["id"] == "p-1"
+        assert results[0]["score"] == 0.9
+        assert results[0]["payload"] == {"content": "test"}
+
+    def test_delete_points(self):
+        backend, mock_qdrant = self._make_backend()
+        backend.delete_points("coll", ["p-1", "p-2"])
+        mock_qdrant.delete.assert_called_once_with(
+            collection_name="coll", points_selector=["p-1", "p-2"]
+        )
+
+
+# ── LanceDBBackend ──────────────────────────────────────────────────────────
+
+
+class TestLanceDBBackend:
+    """Test LanceDBBackend with mocked lancedb."""
+
+    def _make_backend(self):
+        from agentflow.memory.backends.lancedb_backend import LanceDBBackend
+
+        mock_db = MagicMock()
+        with patch("agentflow.memory.backends.lancedb_backend._lancedb") as mock_lancedb:
+            mock_lancedb.connect.return_value = mock_db
+            backend = LanceDBBackend(path="/tmp/test-lance")
+        backend._db = mock_db
+        return backend, mock_db
+
+    def test_ensure_collection_creates_when_missing(self):
+        backend, mock_db = self._make_backend()
+        mock_db.table_names.return_value = []
+        mock_table = MagicMock()
+        mock_db.create_table.return_value = mock_table
+
+        with patch("agentflow.memory.backends.lancedb_backend.pa") as mock_pa:
+            backend.ensure_collection("my_table", 768)
+
+        mock_db.create_table.assert_called_once()
+        assert backend._tables["my_table"] is mock_table
+
+    def test_ensure_collection_opens_existing(self):
+        backend, mock_db = self._make_backend()
+        mock_db.table_names.return_value = ["my_table"]
+        mock_table = MagicMock()
+        mock_db.open_table.return_value = mock_table
+
+        backend.ensure_collection("my_table", 768)
+        mock_db.open_table.assert_called_once_with("my_table")
+        assert backend._tables["my_table"] is mock_table
+
+    def test_upsert(self):
+        backend, mock_db = self._make_backend()
+        mock_table = MagicMock()
+        backend._tables["coll"] = mock_table
+
+        backend.upsert("coll", "id-1", [0.1, 0.2], {"content": "hello"})
+        mock_table.add.assert_called_once()
+        row = mock_table.add.call_args[0][0][0]
+        assert row["id"] == "id-1"
+        assert row["vector"] == [0.1, 0.2]
+
+    def test_query(self):
+        import json
+        backend, mock_db = self._make_backend()
+        mock_table = MagicMock()
+        backend._tables["coll"] = mock_table
+
+        mock_table.search.return_value.limit.return_value.to_list.return_value = [
+            {"id": "id-1", "vector": [0.1], "payload": json.dumps({"content": "test"}), "_distance": 0.1}
+        ]
+
+        results = backend.query("coll", [0.1], 5)
+        assert len(results) == 1
+        assert results[0]["id"] == "id-1"
+        assert results[0]["score"] == pytest.approx(0.9)
+        assert results[0]["payload"]["content"] == "test"
+
+    def test_delete_points(self):
+        backend, mock_db = self._make_backend()
+        mock_table = MagicMock()
+        backend._tables["coll"] = mock_table
+
+        backend.delete_points("coll", ["id-1", "id-2"])
+        mock_table.delete.assert_called_once_with("id IN ('id-1', 'id-2')")
+
+
+# ── ChromaBackend ───────────────────────────────────────────────────────────
+
+
+class TestChromaBackend:
+    """Test ChromaBackend with mocked chromadb."""
+
+    def _make_backend(self):
+        from agentflow.memory.backends.chroma_backend import ChromaBackend
+
+        mock_client = MagicMock()
+        with patch("agentflow.memory.backends.chroma_backend._chromadb") as mock_chromadb:
+            mock_chromadb.PersistentClient.return_value = mock_client
+            backend = ChromaBackend(path="/tmp/test-chroma")
+        backend._client = mock_client
+        return backend, mock_client
+
+    def test_ensure_collection(self):
+        backend, mock_client = self._make_backend()
+        mock_coll = MagicMock()
+        mock_client.get_or_create_collection.return_value = mock_coll
+
+        backend.ensure_collection("my_coll", 768)
+        mock_client.get_or_create_collection.assert_called_once_with(
+            name="my_coll", metadata={"hnsw:space": "cosine"}
+        )
+        assert backend._collections["my_coll"] is mock_coll
+
+    def test_upsert(self):
+        backend, mock_client = self._make_backend()
+        mock_coll = MagicMock()
+        backend._collections["coll"] = mock_coll
+
+        backend.upsert("coll", "id-1", [0.1, 0.2], {"content": "hello", "agent": "test"})
+        mock_coll.upsert.assert_called_once_with(
+            ids=["id-1"],
+            embeddings=[[0.1, 0.2]],
+            documents=["hello"],
+            metadatas=[{"content": "hello", "agent": "test"}],
+        )
+
+    def test_query(self):
+        backend, mock_client = self._make_backend()
+        mock_coll = MagicMock()
+        backend._collections["coll"] = mock_coll
+
+        mock_coll.query.return_value = {
+            "ids": [["id-1"]],
+            "metadatas": [[{"content": "test", "agent": "a"}]],
+            "distances": [[0.15]],
+        }
+
+        results = backend.query("coll", [0.1], 5)
+        assert len(results) == 1
+        assert results[0]["id"] == "id-1"
+        assert results[0]["score"] == pytest.approx(0.85)
+        assert results[0]["payload"]["content"] == "test"
+
+    def test_delete_points(self):
+        backend, mock_client = self._make_backend()
+        mock_coll = MagicMock()
+        backend._collections["coll"] = mock_coll
+
+        backend.delete_points("coll", ["id-1", "id-2"])
+        mock_coll.delete.assert_called_once_with(ids=["id-1", "id-2"])
 
 
 # ── OpenAICompatProvider ─────────────────────────────────────────────────────

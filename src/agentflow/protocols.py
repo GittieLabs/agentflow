@@ -53,6 +53,23 @@ class MemoryStore(Protocol):
 
 
 @runtime_checkable
+class VectorBackend(Protocol):
+    """Contract for vector database backends (Qdrant, LanceDB, Chroma, etc.).
+
+    Each backend must translate these operations into the native API of the
+    underlying vector store. The ``query`` method must return a list of dicts
+    with keys ``id`` (str), ``score`` (float), and ``payload`` (dict).
+    """
+
+    def ensure_collection(self, name: str, dim: int) -> None: ...
+    def upsert(
+        self, collection: str, point_id: str, vector: list[float], payload: dict[str, Any]
+    ) -> None: ...
+    def query(self, collection: str, vector: list[float], limit: int) -> list[dict[str, Any]]: ...
+    def delete_points(self, collection: str, point_ids: list[str]) -> None: ...
+
+
+@runtime_checkable
 class EventHandler(Protocol):
     """Contract for observability event handlers."""
 
