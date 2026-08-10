@@ -753,6 +753,7 @@ class TestGoogleGenAIProvider:
         mock_part = MagicMock()
         mock_part.text = "Hello from Gemini!"
         mock_part.function_call = None
+        mock_part.thought = False
 
         mock_content = MagicMock()
         mock_content.parts = [mock_part]
@@ -763,6 +764,7 @@ class TestGoogleGenAIProvider:
         mock_usage = MagicMock()
         mock_usage.prompt_token_count = 15
         mock_usage.candidates_token_count = 8
+        mock_usage.thoughts_token_count = 0
 
         mock_response = MagicMock()
         mock_response.candidates = [mock_candidate]
@@ -773,7 +775,7 @@ class TestGoogleGenAIProvider:
         assert result.text == "Hello from Gemini!"
         assert result.tool_calls == []
         assert result.stop_reason == "end_turn"
-        assert result.usage == {"input_tokens": 15, "output_tokens": 8}
+        assert result.usage == {"input_tokens": 15, "output_tokens": 8, "thinking_tokens": 0}
 
     def test_from_api_response_function_call(self):
         provider, _, _, _ = self._make_provider()
@@ -785,6 +787,7 @@ class TestGoogleGenAIProvider:
         mock_part = MagicMock()
         mock_part.text = None
         mock_part.function_call = mock_fc
+        mock_part.thought = False
         type(mock_part).text = PropertyMock(return_value=None)
 
         mock_content = MagicMock()
@@ -832,6 +835,7 @@ class TestGoogleGenAIProvider:
             mock_part = MagicMock()
             mock_part.text = "Gemini response"
             mock_part.function_call = None
+            mock_part.thought = False
 
             mock_content = MagicMock()
             mock_content.parts = [mock_part]

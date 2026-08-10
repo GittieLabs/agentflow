@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agentflow.types import AgentResponse, Message, Role, ToolCall, ToolResult
+from agentflow.types import AgentResponse, Message, Role, ToolCall
 
 logger = logging.getLogger("agentflow.providers.anthropic")
 
