@@ -38,7 +38,7 @@ class GoogleGenAIProvider:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash-preview",
+        model: str = "gemini-flash-latest",
     ) -> None:
         if genai is None:
             raise ImportError("Install google-genai: pip install agentflow[google]")

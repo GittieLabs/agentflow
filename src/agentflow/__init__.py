@@ -137,4 +137,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'agentflow' has no attribute {name!r}")
 
 
-__version__ = "0.8.1"
+__version__ = "0.8.2"

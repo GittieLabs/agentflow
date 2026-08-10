@@ -883,3 +883,151 @@ class TestGoogleGenAIProvider:
         assert result[1]["role"] == "model"
         assert result[2]["role"] == "user"  # Tool results go as user
         assert result[3]["role"] == "model"
+
+
+# ── AnthropicProvider ────────────────────────────────────────────────────────
+
+
+class FakeBadRequestError(Exception):
+    """Stands in for anthropic.BadRequestError -- a real 400 carries a
+    `.body` dict shaped exactly like this in production; see the real,
+    live-verified error this mirrors: Anthropic's newest Claude model
+    lines reject `temperature` outright with
+    '`temperature` is deprecated for this model.'"""
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.body = {"error": {"message": message}}
+
+
+class TestAnthropicProvider:
+    """Test Anthropic provider message translation and the newest Claude
+    model lines' adaptive-thinking + effort interface (first hit:
+    claude-sonnet-5), which is a different shape than the older,
+    fixed-budget_tokens thinking interface and rejects `temperature`
+    entirely while active."""
+
+    def _make_provider(self, model="claude-sonnet-5"):
+        from agentflow.providers.anthropic import AnthropicProvider
+
+        with patch("agentflow.providers.anthropic.anthropic") as mock_anthropic_mod:
+            mock_anthropic_mod.BadRequestError = FakeBadRequestError
+            mock_client = AsyncMock()
+            mock_anthropic_mod.AsyncAnthropic.return_value = mock_client
+            provider = AnthropicProvider(api_key="test-key", model=model)
+            return provider, mock_client
+
+    def _mock_response(self, text="Hello!"):
+        mock_block = MagicMock()
+        mock_block.type = "text"
+        mock_block.text = text
+
+        mock_usage = MagicMock()
+        mock_usage.input_tokens = 10
+        mock_usage.output_tokens = 5
+
+        mock_response = MagicMock()
+        mock_response.content = [mock_block]
+        mock_response.stop_reason = "end_turn"
+        mock_response.usage = mock_usage
+        return mock_response
+
+    @pytest.mark.asyncio
+    async def test_chat_plain_model_sends_temperature(self):
+        """A model with no `-low`/`-medium`/`-high` suffix keeps the
+        existing temperature behavior untouched."""
+        provider, mock_client = self._make_provider(model="claude-sonnet-4-6")
+        mock_client.messages.create = AsyncMock(return_value=self._mock_response())
+
+        messages = [Message(role=Role.USER, content="Hi")]
+        result = await provider.chat(messages, temperature=0.3)
+
+        assert result.text == "Hello!"
+        _, kwargs = mock_client.messages.create.call_args
+        assert kwargs["model"] == "claude-sonnet-4-6"
+        assert kwargs["temperature"] == 0.3
+        assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_chat_thinking_suffix_uses_adaptive_effort_not_temperature(self):
+        """`claude-sonnet-5-medium` selects adaptive thinking with
+        effort='medium' against the real `claude-sonnet-5` model, and
+        temperature is never sent -- required whenever thinking is
+        active, not merely set to 1."""
+        provider, mock_client = self._make_provider(model="claude-sonnet-5-medium")
+        mock_client.messages.create = AsyncMock(return_value=self._mock_response())
+
+        messages = [Message(role=Role.USER, content="Hi")]
+        await provider.chat(messages, temperature=0.9)
+
+        _, kwargs = mock_client.messages.create.call_args
+        assert kwargs["model"] == "claude-sonnet-5"
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert kwargs["output_config"] == {"effort": "medium"}
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_chat_bare_model_retries_without_temperature_on_deprecation_error(self):
+        """A bare model name with no thinking suffix (e.g. plain
+        `claude-sonnet-5`) can still reject `temperature` outright --
+        this must retry once without it rather than raising, and must
+        never retry for an unrelated 400. The patch must stay active for
+        the whole `chat()` call, not just provider construction, since
+        `except anthropic.BadRequestError` re-resolves the *real* module
+        the instant the patch context exits."""
+        from agentflow.providers.anthropic import AnthropicProvider
+
+        with patch("agentflow.providers.anthropic.anthropic") as mock_anthropic_mod:
+            mock_anthropic_mod.BadRequestError = FakeBadRequestError
+            mock_client = AsyncMock()
+            mock_anthropic_mod.AsyncAnthropic.return_value = mock_client
+            provider = AnthropicProvider(api_key="test-key", model="claude-sonnet-5")
+
+            mock_client.messages.create = AsyncMock(
+                side_effect=[
+                    FakeBadRequestError("`temperature` is deprecated for this model."),
+                    self._mock_response(),
+                ]
+            )
+
+            messages = [Message(role=Role.USER, content="Hi")]
+            result = await provider.chat(messages, temperature=0.7)
+
+        assert result.text == "Hello!"
+        assert mock_client.messages.create.call_count == 2
+        first_kwargs = mock_client.messages.create.call_args_list[0].kwargs
+        second_kwargs = mock_client.messages.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.7
+        assert "temperature" not in second_kwargs
+
+    @pytest.mark.asyncio
+    async def test_chat_unrelated_bad_request_is_not_retried(self):
+        """A 400 for a different reason must propagate, not be silently
+        swallowed by the temperature-retry path."""
+        from agentflow.providers.anthropic import AnthropicProvider
+
+        with patch("agentflow.providers.anthropic.anthropic") as mock_anthropic_mod:
+            mock_anthropic_mod.BadRequestError = FakeBadRequestError
+            mock_client = AsyncMock()
+            mock_anthropic_mod.AsyncAnthropic.return_value = mock_client
+            provider = AnthropicProvider(api_key="test-key", model="claude-sonnet-5")
+
+            mock_client.messages.create = AsyncMock(
+                side_effect=FakeBadRequestError("max_tokens is too large for this model.")
+            )
+
+            messages = [Message(role=Role.USER, content="Hi")]
+            with pytest.raises(FakeBadRequestError):
+                await provider.chat(messages, temperature=0.7)
+
+        assert mock_client.messages.create.call_count == 1
+
+    def test_from_api_response_text(self):
+        provider, _ = self._make_provider()
+        result = provider._from_api_response(self._mock_response("Sonnet says hi"))
+        assert isinstance(result, AgentResponse)
+        assert result.text == "Sonnet says hi"
+        assert result.tool_calls == []
+        assert result.stop_reason == "end_turn"
+        assert result.usage == {"input_tokens": 10, "output_tokens": 5}
