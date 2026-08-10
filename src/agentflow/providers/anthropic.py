@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agentflow.types import AgentResponse, Message, Role, ToolCall, ToolResult
+from agentflow.types import AgentResponse, Message, Role, ToolCall
 
 logger = logging.getLogger("agentflow.providers.anthropic")
 
@@ -19,13 +19,23 @@ except ImportError:
     anthropic = None  # type: ignore[assignment]
 
 
+# Anthropic's newest reasoning model lines (first hit: claude-sonnet-5)
+# reject `temperature` outright once thinking is active and use a newer
+# adaptive-thinking + effort interface instead of the older, fixed
+# `budget_tokens` one. Selected via a `-low`/`-medium`/`-high` model-name
+# suffix -- mirroring GoogleGenAIProvider's identical convention for
+# Gemini thinking models exactly, one pattern across providers instead
+# of two different ones.
+_THINKING_EFFORT_SUFFIXES = ("-low", "-medium", "-high")
+
+
 class AnthropicProvider:
     """LLMProvider implementation for Anthropic Claude models."""
 
     def __init__(
         self,
         api_key: str,
-        model: str = "claude-sonnet-4-6",
+        model: str = "claude-sonnet-5",
     ):
         if anthropic is None:
             raise ImportError("Install anthropic: pip install agentflow[anthropic]")
@@ -42,8 +52,14 @@ class AnthropicProvider:
     ) -> AgentResponse:
         """Send messages to Claude and return an AgentResponse."""
         api_messages = self._to_api_messages(messages)
+
+        model = self._model
+        effort = None
+        if model.endswith(_THINKING_EFFORT_SUFFIXES):
+            model, effort = model.rsplit("-", 1)
+
         kwargs: dict[str, Any] = {
-            "model": self._model,
+            "model": model,
             "max_tokens": max_tokens,
             "messages": api_messages,
         }
@@ -51,11 +67,31 @@ class AnthropicProvider:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
-        # Only pass temperature for non-tool turns to avoid API issues
-        if temperature != 1.0:
+        if effort:
+            # Adaptive thinking requires temperature to be entirely absent
+            # from the request, not merely set to 1.
+            kwargs["thinking"] = {"type": "adaptive"}
+            kwargs["output_config"] = {"effort": effort}
+        elif temperature != 1.0:
             kwargs["temperature"] = temperature
 
-        response = await self._client.messages.create(**kwargs)
+        try:
+            response = await self._client.messages.create(**kwargs)
+        except anthropic.BadRequestError as e:
+            # Some Claude model lines reject `temperature` outright even
+            # with no explicit thinking suffix (first hit: bare
+            # `claude-sonnet-5`, thinking on by default) -- retry once
+            # without it rather than hardcoding a model-name allowlist
+            # that would need updating for every future model release,
+            # the exact problem this fix exists to get away from.
+            body = e.body if isinstance(e.body, dict) else {}
+            error_message = body.get("error", {}).get("message", "")
+            if "temperature" in kwargs and "temperature" in error_message and "deprecated" in error_message:
+                del kwargs["temperature"]
+                response = await self._client.messages.create(**kwargs)
+            else:
+                raise
+
         return self._from_api_response(response)
 
     def _to_api_messages(self, messages: list[Message]) -> list[dict[str, Any]]:

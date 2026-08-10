@@ -16,7 +16,7 @@ from agentflow.config.schemas import AgentConfig
 from agentflow.events import EventBus, TOOL_CALLED, TOOL_RESULT, ERROR, LLM_CALL_STARTED, LLM_CALL_COMPLETED
 from agentflow.protocols import LLMProvider, ToolDispatcher
 from agentflow.tools.http_dispatcher import last_raw_tool_result
-from agentflow.types import AgentResponse, Message, NodeOutput, Role, ToolResult
+from agentflow.types import Message, NodeOutput, Role, ToolResult
 
 logger = logging.getLogger("agentflow.agent")
 
@@ -135,9 +135,7 @@ class AgentExecutor:
 
             # Emit thinking text as a trace event (Gemini thinking models only).
             # This is separated from response text in the provider's _from_api_response.
-            thinking_text = (response.raw and hasattr(response, "metadata")
-                             and response.metadata.get("thinking"))
-            # Simpler: check raw response directly since AgentResponse doesn't carry metadata yet
+            # Checks the raw response directly since AgentResponse doesn't carry metadata yet.
             if self._events and hasattr(response, "raw") and response.raw:
                 raw = response.raw
                 if hasattr(raw, "candidates") and raw.candidates:

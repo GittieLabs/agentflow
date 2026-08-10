@@ -2,6 +2,13 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.8.2
+
+### Fixed
+
+- **`AnthropicProvider` support for Claude's newest reasoning model lines (first hit: `claude-sonnet-5`).** These models reject an explicit `temperature` outright ("`temperature` is deprecated for this model") and use a newer adaptive-thinking + effort interface (`thinking: {"type": "adaptive"}` + `output_config: {"effort": ...}`) instead of the older, fixed `budget_tokens` one. `chat()` now: (1) recognizes a `-low`/`-medium`/`-high` model-name suffix to opt into adaptive thinking at that effort level, mirroring `GoogleGenAIProvider`'s identical convention for Gemini thinking models rather than inventing a second, different one; (2) retries once without `temperature` on the specific "temperature is deprecated" 400, rather than hardcoding a model-name allowlist that would need updating for every future release.
+- **Stale default models.** `AnthropicProvider`'s default is now `claude-sonnet-5` (was `claude-sonnet-4-6`). `GoogleGenAIProvider`'s default is now `gemini-flash-latest` (was `gemini-2.5-flash-preview`, which 404s — it no longer exists on Google's real model list). `gemini-flash-latest` is Google's own stable rolling alias, chosen over a dated snapshot so this default doesn't itself go stale the same way.
+
 ## 0.7.4
 
 ### Added
