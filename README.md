@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/gittielabs-agentflow.svg)](https://pypi.org/project/gittielabs-agentflow/)
 [![Python 3.11+](https://img.shields.io/pypi/pyversions/gittielabs-agentflow.svg)](https://pypi.org/project/gittielabs-agentflow/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![CI](https://github.com/GittieLabs/agentflow/actions/workflows/ci.yml/badge.svg)](https://github.com/GittieLabs/agentflow/actions/workflows/ci.yml)
 
 **Context engineering framework for multi-agent systems.**
@@ -183,4 +183,5 @@ pytest
 
 ## License
 
-MIT
+Apache License 2.0 -- see [LICENSE](LICENSE) and [NOTICE](NOTICE). Releases 0.8.2 and earlier
+remain available under the MIT License; those rights are not revoked by this change.

@@ -96,7 +96,7 @@ config, system_prompt = loader.get_agent("researcher")
 
 AgentFlow is in **alpha** (v0.5.0). The core APIs are stabilizing but may still change between minor versions. Production use should pin to a specific version.
 
-- **License**: MIT
+- **License**: Apache License 2.0
 - **Python**: 3.11+
 - **PyPI**: [gittielabs-agentflow](https://pypi.org/project/gittielabs-agentflow/)
 - **Source**: [GittieLabs/agentflow](https://github.com/GittieLabs/agentflow)
