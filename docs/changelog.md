@@ -2,6 +2,15 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.9.0
+
+### Changed
+
+- **Relicensed from MIT to Apache License 2.0.** Releases 0.8.2 and earlier remain available
+  under the MIT License; those rights are not revoked by this change. See
+  [LICENSE](https://github.com/GittieLabs/agentflow/blob/main/LICENSE) and
+  [NOTICE](https://github.com/GittieLabs/agentflow/blob/main/NOTICE).
+
 ## 0.8.2
 
 ### Fixed
