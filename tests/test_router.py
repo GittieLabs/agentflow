@@ -4,7 +4,7 @@ import pytest
 from agentflow.config.schemas import RouterConfig, RoutingRule
 from agentflow.providers.mock import MockLLMProvider
 from agentflow.router.engine import RouterEngine, RoutingResult
-from agentflow.router.rules import RuleEvaluator
+from agentflow.router.rules import RuleConditionError, RuleEvaluator
 from agentflow.types import AgentResponse
 
 
@@ -150,6 +150,67 @@ def test_eval_expr_standalone():
     assert evaluator.eval_expr("'research' in message or 'search' in message", ctx)
     assert evaluator.eval_expr("'research' in message and channel == 'signal'", ctx)
     assert not evaluator.eval_expr("'research' in message and channel == 'voice'", ctx)
+
+
+# ── Double-quoted string literals ───────────────────────────────────────────
+
+
+def test_rule_equality_double_quotes():
+    """Double-quoted literals are equivalent to single-quoted ones."""
+    evaluator = RuleEvaluator()
+    rule = RoutingRule(**{"if": 'area == "schematic"', "routeTo": "schematic_agent"})
+    assert evaluator.evaluate(rule, {"area": "schematic"})
+    assert not evaluator.evaluate(rule, {"area": "layout"})
+
+
+def test_rule_inequality_double_quotes():
+    evaluator = RuleEvaluator()
+    rule = RoutingRule(**{"if": 'channel != "voice"', "routeTo": "text_agent"})
+    assert evaluator.evaluate(rule, {"channel": "signal"})
+    assert not evaluator.evaluate(rule, {"channel": "voice"})
+
+
+def test_rule_contains_double_quotes():
+    evaluator = RuleEvaluator()
+    rule = RoutingRule(**{"if": '"calendar" in message', "routeTo": "calendar_agent"})
+    assert evaluator.evaluate(rule, {"message": "What's on my calendar today?"})
+    assert not evaluator.evaluate(rule, {"message": "What's the weather?"})
+
+
+def test_rule_in_list_double_quotes():
+    """field in [...] already accepted mixed quoting for list items."""
+    evaluator = RuleEvaluator()
+    rule = RoutingRule(**{"if": 'intent in ["search", "research"]', "routeTo": "research_agent"})
+    assert evaluator.evaluate(rule, {"intent": "search"})
+    assert not evaluator.evaluate(rule, {"intent": "chat"})
+
+
+# ── Fail loudly on unparseable conditions ───────────────────────────────────
+
+
+def test_eval_expr_unrecognized_syntax_raises():
+    """A condition matching no supported pattern raises rather than silently
+    evaluating false and letting the caller fall through to a fallback."""
+    evaluator = RuleEvaluator()
+    with pytest.raises(RuleConditionError, match=r"area == schematic"):
+        evaluator.eval_expr("area == schematic", {"area": "schematic"})
+
+
+def test_rule_evaluate_unrecognized_syntax_raises():
+    evaluator = RuleEvaluator()
+    rule = RoutingRule(**{"if": "area = 'schematic'", "routeTo": "schematic_agent"})
+    with pytest.raises(RuleConditionError):
+        evaluator.evaluate(rule, {"area": "schematic"})
+
+
+def test_rule_match_propagates_unrecognized_syntax():
+    """match() over a rule list doesn't swallow a malformed rule's error."""
+    evaluator = RuleEvaluator()
+    rules = [
+        RoutingRule(**{"if": "area = 'schematic'", "routeTo": "schematic_agent"}),
+    ]
+    with pytest.raises(RuleConditionError):
+        evaluator.match(rules, {"area": "schematic"})
 
 
 # ── RouterEngine ─────────────────────────────────────────────────────────────

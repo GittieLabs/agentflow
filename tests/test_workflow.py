@@ -1,4 +1,5 @@
 """Tests for workflow: WorkflowDAG, NodeRunner, WorkflowExecutor."""
+import asyncio
 import json
 import pytest
 
@@ -7,7 +8,7 @@ from agentflow.providers.mock import MockLLMProvider
 from agentflow.agent.runtime import AgentExecutor
 from agentflow.types import AgentResponse, NodeOutput
 from agentflow.workflow.dag import WorkflowDAG
-from agentflow.workflow.executor import WorkflowExecutor
+from agentflow.workflow.executor import WorkflowExecutor, WorkflowNodeError
 from agentflow.workflow.node import NodeRunner
 
 
@@ -516,6 +517,34 @@ def test_schema_foreach_field():
     assert node.foreach == "toc.artifacts.sections"
 
 
+def test_schema_mode_defaults_and_accepts_async():
+    node = WorkflowNode(id="a", agent="worker")
+    assert node.mode == "sync"
+    async_node = WorkflowNode(id="b", agent="worker", mode="async")
+    assert async_node.mode == "async"
+
+
+def test_schema_mode_rejects_unknown_value():
+    """A typo'd mode used to be silently treated as sync — now it's rejected."""
+    with pytest.raises(ValueError, match="invalid mode"):
+        WorkflowNode(id="bad", agent="worker", mode="asnyc")
+
+
+def test_schema_on_error_defaults_and_accepts_abort():
+    node = WorkflowNode(id="a", agent="worker")
+    assert node.on_error == "continue"
+    abort_node = WorkflowNode(id="b", agent="worker", on_error="abort")
+    assert abort_node.on_error == "abort"
+    # Also settable via its YAML alias, like other aliased fields in this schema.
+    aliased = WorkflowNode(**{"id": "c", "agent": "worker", "onError": "abort"})
+    assert aliased.on_error == "abort"
+
+
+def test_schema_on_error_rejects_unknown_value():
+    with pytest.raises(ValueError, match="invalid on_error"):
+        WorkflowNode(id="bad", agent="worker", on_error="ignore")
+
+
 # ── DAG validation: foreach refs ─────────────────────────────────────────────
 
 
@@ -940,3 +969,247 @@ async def test_backward_compat_existing_workflows():
 
     assert outputs["a"].text == "A done."
     assert outputs["b"].text == "B done."
+
+
+# ── Execution modes: async & on_error ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_async_mode_does_not_block_siblings():
+    """A mode: async node is dispatched without the wave loop waiting on it —
+    a sync sibling with no dependency on it runs to completion first, which
+    used to be impossible since 'async' was silently treated as sync."""
+    continue_started = asyncio.Event()
+    execution_order: list[str] = []
+
+    async def main_handler(message, prior_outputs):
+        return NodeOutput(node_id="main_task", agent_id="main", text="started")
+
+    async def notify_handler(message, prior_outputs):
+        await asyncio.wait_for(continue_started.wait(), timeout=1)
+        execution_order.append("notify")
+        return NodeOutput(node_id="notify", agent_id="notifier", text="notified")
+
+    async def continue_handler(message, prior_outputs):
+        execution_order.append("continue")
+        continue_started.set()
+        return NodeOutput(node_id="continue", agent_id="worker", text="continued")
+
+    wf_config = WorkflowConfig(
+        name="async_test",
+        nodes=[
+            WorkflowNode(id="main_task", handler="main", next=["notify", "continue"]),
+            WorkflowNode(id="notify", handler="notify_handler", mode="async"),
+            WorkflowNode(id="continue", handler="continue_handler"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={
+            "main": main_handler,
+            "notify_handler": notify_handler,
+            "continue_handler": continue_handler,
+        },
+    )
+    outputs = await executor.run(initial_message="go")
+
+    assert execution_order == ["continue", "notify"]
+    assert outputs["notify"].text == "notified"
+    assert outputs["continue"].text == "continued"
+
+
+@pytest.mark.asyncio
+async def test_async_mode_node_with_no_dependents_still_completes():
+    """A fire-and-forget async node with nothing downstream still finishes
+    and appears in run()'s returned outputs — it isn't dropped."""
+    async def main_handler(message, prior_outputs):
+        return NodeOutput(node_id="main_task", agent_id="main", text="started")
+
+    async def notify_handler(message, prior_outputs):
+        await asyncio.sleep(0)
+        return NodeOutput(node_id="notify", agent_id="notifier", text="notified")
+
+    wf_config = WorkflowConfig(
+        name="async_no_dependents",
+        nodes=[
+            WorkflowNode(id="main_task", handler="main", next=["notify"]),
+            WorkflowNode(id="notify", handler="notify_handler", mode="async"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"main": main_handler, "notify_handler": notify_handler},
+    )
+    outputs = await executor.run(initial_message="go")
+
+    assert outputs["notify"].text == "notified"
+
+
+@pytest.mark.asyncio
+async def test_async_mode_error_recorded_by_default():
+    """An async-mode node that raises degrades gracefully by default, same
+    as sync/parallel nodes — metadata['error'] is set, run() doesn't raise."""
+    async def main_handler(message, prior_outputs):
+        return NodeOutput(node_id="main_task", agent_id="main", text="started")
+
+    async def broken_handler(message, prior_outputs):
+        raise RuntimeError("boom")
+
+    wf_config = WorkflowConfig(
+        name="async_error",
+        nodes=[
+            WorkflowNode(id="main_task", handler="main", next=["notify"]),
+            WorkflowNode(id="notify", handler="broken_handler", mode="async"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"main": main_handler, "broken_handler": broken_handler},
+    )
+    outputs = await executor.run(initial_message="go")
+
+    assert outputs["notify"].metadata.get("error") is True
+    assert "boom" in outputs["notify"].text
+
+
+@pytest.mark.asyncio
+async def test_on_error_abort_sequential_raises():
+    """on_error: abort turns a sequential node's failure into a raised
+    exception out of run(), instead of a swallowed error NodeOutput."""
+    async def broken_handler(message, prior_outputs):
+        raise RuntimeError("boom")
+
+    wf_config = WorkflowConfig(
+        name="abort_sequential",
+        nodes=[
+            WorkflowNode(id="code", handler="broken_handler", on_error="abort"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"broken_handler": broken_handler},
+    )
+    with pytest.raises(WorkflowNodeError, match="code") as exc_info:
+        await executor.run(initial_message="go")
+    assert exc_info.value.node_id == "code"
+    assert isinstance(exc_info.value.original, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_on_error_continue_is_still_the_default():
+    """Without on_error: abort, behavior is unchanged — the failure is
+    swallowed into metadata and run() returns normally."""
+    async def broken_handler(message, prior_outputs):
+        raise RuntimeError("boom")
+
+    wf_config = WorkflowConfig(
+        name="default_continue",
+        nodes=[
+            WorkflowNode(id="code", handler="broken_handler"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"broken_handler": broken_handler},
+    )
+    outputs = await executor.run(initial_message="go")
+    assert outputs["code"].metadata.get("error") is True
+
+
+@pytest.mark.asyncio
+async def test_on_error_abort_parallel_raises():
+    async def ok_handler(message, prior_outputs):
+        return NodeOutput(node_id="ok", agent_id="ok", text="fine")
+
+    async def broken_handler(message, prior_outputs):
+        raise RuntimeError("boom")
+
+    wf_config = WorkflowConfig(
+        name="abort_parallel",
+        nodes=[
+            WorkflowNode(id="start", handler="ok_handler", next=["ok", "bad"]),
+            WorkflowNode(id="ok", handler="ok_handler", mode="parallel"),
+            WorkflowNode(id="bad", handler="broken_handler", mode="parallel", on_error="abort"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"ok_handler": ok_handler, "broken_handler": broken_handler},
+    )
+    with pytest.raises(WorkflowNodeError, match="bad"):
+        await executor.run(initial_message="go")
+
+
+@pytest.mark.asyncio
+async def test_on_error_abort_async_raises():
+    """on_error: abort also applies to async-mode (fire-and-forget) nodes —
+    their failure still surfaces out of run() instead of vanishing with the
+    background task."""
+    async def main_handler(message, prior_outputs):
+        return NodeOutput(node_id="main_task", agent_id="main", text="started")
+
+    async def broken_handler(message, prior_outputs):
+        raise RuntimeError("boom")
+
+    wf_config = WorkflowConfig(
+        name="abort_async",
+        nodes=[
+            WorkflowNode(id="main_task", handler="main", next=["notify"]),
+            WorkflowNode(id="notify", handler="broken_handler", mode="async", on_error="abort"),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"main": main_handler, "broken_handler": broken_handler},
+    )
+    with pytest.raises(WorkflowNodeError, match="notify"):
+        await executor.run(initial_message="go")
+
+
+@pytest.mark.asyncio
+async def test_on_error_abort_foreach_raises():
+    """on_error: abort on a foreach node aborts the workflow on the first
+    failing iteration instead of returning partial results + error metadata."""
+    async def produce_list(message, prior_outputs):
+        return NodeOutput(
+            node_id="source", agent_id="", text="",
+            artifacts={"items": ["a", "b"]},
+        )
+
+    async def broken_handler(message, prior_outputs):
+        raise RuntimeError("Deliberate failure")
+
+    wf_config = WorkflowConfig(
+        name="abort_foreach",
+        nodes=[
+            WorkflowNode(id="source", handler="produce_list", next=["process"]),
+            WorkflowNode(
+                id="process",
+                handler="broken_handler",
+                foreach="source.artifacts.items",
+                on_error="abort",
+            ),
+        ],
+    )
+
+    executor = WorkflowExecutor(
+        config=wf_config,
+        runner_factory=lambda nid: None,
+        handlers={"produce_list": produce_list, "broken_handler": broken_handler},
+    )
+    with pytest.raises(WorkflowNodeError, match="process"):
+        await executor.run(initial_message="go")

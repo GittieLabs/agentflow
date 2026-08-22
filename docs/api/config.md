@@ -55,6 +55,7 @@ Directed acyclic graph definitions mapping out sequences.
 - **foreach** (`str | None`): Dot-notation pointer to an upstream list artifact (triggers mapping multiple executes of this node)
 - **next** (`str | list[str] | None`): Next node IDs
 - **mode** (`str`): Execution method (`sync`, `parallel`, `async`)
+- **onError** (`str`): Failure handling (`continue`, `abort`) — default `continue` swallows the failure into `metadata={"error": True}` and keeps the DAG running; `abort` raises `WorkflowNodeError` out of `WorkflowExecutor.run()` instead
 - **inputs** (`dict[str, str]`): Mappings dict from upstream outputs. Example: `{ message: "upstream_node.text" }`
 
 ## Domain Config (`*.domain.md`)

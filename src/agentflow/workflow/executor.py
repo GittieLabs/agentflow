@@ -30,6 +30,24 @@ from agentflow.workflow.node import NodeRunner
 
 logger = logging.getLogger("agentflow.workflow")
 
+
+class WorkflowNodeError(RuntimeError):
+    """Raised when a node configured with ``on_error: abort`` fails.
+
+    By default a failing node degrades gracefully — its NodeOutput carries
+    ``metadata={"error": True}`` and the rest of the DAG keeps running, so a
+    handler that doesn't check for it can silently treat a failure as a
+    normal result. ``on_error: abort`` opts a specific node out of that: its
+    exception propagates out of ``WorkflowExecutor.run()`` instead, wrapped
+    here so the failing node id survives. The original exception is
+    available as ``__cause__``.
+    """
+
+    def __init__(self, node_id: str, original: BaseException) -> None:
+        super().__init__(f"Node '{node_id}' failed (on_error: abort): {original}")
+        self.node_id = node_id
+        self.original = original
+
 # Type for a factory that creates NodeRunner for a given node_id
 NodeRunnerFactory = Callable[[str], Awaitable[NodeRunner] | NodeRunner]
 
@@ -99,22 +117,52 @@ class WorkflowExecutor:
         # Seed entry nodes with the initial message
         entry_nodes = set(self._dag.entry_nodes())
 
+        # Nodes with mode: async that are running in the background, dispatched
+        # without the wave loop waiting on them. Drained (results merged into
+        # outputs/completed) either when the loop runs out of graph-ready work
+        # or once the whole DAG is otherwise done — run() never returns with a
+        # background task still in flight.
+        background: dict[str, asyncio.Task] = {}
+
         # Process nodes in waves until all are complete
         while True:
-            ready = self._dag.ready_nodes(completed)
+            # Exclude nodes already dispatched into `background` — they
+            # haven't reached `completed` yet (that only happens once
+            # harvested), but they're not idle either. Without this filter
+            # ready_nodes() would keep re-offering them every wave, since
+            # nothing else marks them as no-longer-ready.
+            ready = [nid for nid in self._dag.ready_nodes(completed) if nid not in background]
+
             if not ready:
-                break
+                if not background:
+                    break
+                # No node is graph-ready, but async-mode nodes are still
+                # running — wait for at least one to finish rather than
+                # ending the workflow while work is outstanding.
+                done, _ = await asyncio.wait(background.values(), return_when=asyncio.FIRST_COMPLETED)
+                await self._harvest_background(background, done, outputs, completed)
+                continue
 
             # Group ready nodes by execution mode
             parallel_batch: list[str] = []
             sequential_batch: list[str] = []
+            async_batch: list[str] = []
 
             for nid in ready:
                 node = self._dag.nodes[nid]
                 if node.mode == "parallel":
                     parallel_batch.append(nid)
+                elif node.mode == "async":
+                    async_batch.append(nid)
                 else:
                     sequential_batch.append(nid)
+
+            # Dispatch async (fire-and-forget) nodes without waiting on them —
+            # siblings in this wave and later waves proceed immediately.
+            for nid in async_batch:
+                background[nid] = asyncio.create_task(
+                    self._run_node(nid, outputs, entry_nodes, initial_message, session_id, variables)
+                )
 
             # Execute parallel nodes concurrently
             if parallel_batch:
@@ -130,6 +178,10 @@ class WorkflowExecutor:
                         logger.error("Node %s failed: %s", nid, result)
                         if self._events:
                             await self._events.emit(ERROR, {"node": nid, "error": str(result)})
+                        if self._dag.nodes[nid].on_error == "abort":
+                            for task in background.values():
+                                task.cancel()
+                            raise WorkflowNodeError(nid, result) from result
                         outputs[nid] = NodeOutput(
                             node_id=nid,
                             agent_id="",
@@ -151,6 +203,10 @@ class WorkflowExecutor:
                     logger.error("Node %s failed: %s", nid, exc)
                     if self._events:
                         await self._events.emit(ERROR, {"node": nid, "error": str(exc)})
+                    if self._dag.nodes[nid].on_error == "abort":
+                        for task in background.values():
+                            task.cancel()
+                        raise WorkflowNodeError(nid, exc) from exc
                     outputs[nid] = NodeOutput(
                         node_id=nid,
                         agent_id="",
@@ -159,6 +215,14 @@ class WorkflowExecutor:
                     )
                 completed.add(nid)
 
+            # Opportunistically harvest any background tasks that finished
+            # while we were awaiting the parallel/sequential batches above —
+            # keeps completed/outputs current so their dependents can become
+            # ready on the very next wave instead of an extra idle round-trip.
+            finished = [t for t in background.values() if t.done()]
+            if finished:
+                await self._harvest_background(background, finished, outputs, completed)
+
         if self._events:
             await self._events.emit(WORKFLOW_COMPLETED, {
                 "workflow": self._dag.name,
@@ -166,6 +230,44 @@ class WorkflowExecutor:
             })
 
         return outputs
+
+    async def _harvest_background(
+        self,
+        background: dict[str, asyncio.Task],
+        done_tasks,
+        outputs: dict[str, NodeOutput],
+        completed: set[str],
+    ) -> None:
+        """Collect finished async-mode node tasks into outputs/completed.
+
+        Mirrors the error handling of the parallel/sequential paths so an
+        async node's failure surfaces the same way theirs does, instead of
+        being lost with the task.
+        """
+        for task in done_tasks:
+            nid = next(n for n, t in background.items() if t is task)
+            del background[nid]
+            try:
+                result = await task
+            except Exception as exc:
+                logger.error("Node %s failed: %s", nid, exc)
+                if self._events:
+                    await self._events.emit(ERROR, {"node": nid, "error": str(exc)})
+                if self._dag.nodes[nid].on_error == "abort":
+                    # Cancel other still-running background tasks before
+                    # propagating — otherwise they'd be left dangling once
+                    # this exception unwinds run().
+                    for other in background.values():
+                        other.cancel()
+                    raise WorkflowNodeError(nid, exc) from exc
+                result = NodeOutput(
+                    node_id=nid,
+                    agent_id="",
+                    text=f"Error: {exc}",
+                    metadata={"error": True},
+                )
+            outputs[nid] = result
+            completed.add(nid)
 
     async def _run_node(
         self,
@@ -385,6 +487,8 @@ class WorkflowExecutor:
                 logger.error(
                     "Foreach %s: iteration %d failed: %s", node_id, i, exc
                 )
+                if node.on_error == "abort":
+                    raise WorkflowNodeError(node_id, exc) from exc
                 return NodeOutput(
                     node_id=node_id,
                     agent_id=node.agent or node.handler or "",

@@ -93,6 +93,31 @@ Then use them in rules:
 
 Rules are evaluated in order. The first match wins.
 
+### Condition Syntax
+
+`RuleEvaluator` doesn't run arbitrary Python — it recognizes a small fixed set of
+patterns: `field == 'value'`, `field != 'value'`, `field in ['a', 'b']`,
+`'substring' in field`, `field == true`, `field == false`, plus `and`/`or`
+compounds of those (not both in the same condition). String literals accept
+either single or double quotes: `area == 'schematic'` and `area == "schematic"`
+are equivalent.
+
+A condition that matches none of these patterns raises `RuleConditionError`
+rather than silently evaluating to `False`. This matters because a rule that
+silently never matches is indistinguishable from a rule that legitimately
+didn't match this context — the router would just fall through to the next
+rule, or ultimately the fallback target, with no indication anything was
+wrong. Import it from `agentflow` if you want to catch it explicitly:
+
+```python
+from agentflow import RuleConditionError
+
+try:
+    result = await router.route(message, context=ctx)
+except RuleConditionError as e:
+    logger.error("Bad routing rule: %s", e)
+```
+
 ## LLM Fallback
 
 When no YAML rule matches and `llmFallback: true`, the router asks an LLM to classify the message into one of the available targets:

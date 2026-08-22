@@ -77,7 +77,10 @@ class WorkflowNode(BaseModel):
     foreach: str | None = None
     next: list[str] | str | None = None
     mode: str = "sync"  # "sync" | "parallel" | "async"
+    on_error: str = Field(default="continue", alias="onError")  # "continue" | "abort"
     inputs: dict[str, str] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
 
     @model_validator(mode="after")
     def _check_agent_or_handler(self) -> "WorkflowNode":
@@ -88,6 +91,16 @@ class WorkflowNode(BaseModel):
         if not self.agent and not self.handler:
             raise ValueError(
                 f"Node '{self.id}': must set 'agent' or 'handler'"
+            )
+        if self.mode not in ("sync", "parallel", "async"):
+            raise ValueError(
+                f"Node '{self.id}': invalid mode {self.mode!r} — must be "
+                f"'sync', 'parallel', or 'async'"
+            )
+        if self.on_error not in ("continue", "abort"):
+            raise ValueError(
+                f"Node '{self.id}': invalid on_error {self.on_error!r} — must be "
+                f"'continue' or 'abort'"
             )
         return self
 

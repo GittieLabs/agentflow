@@ -46,8 +46,8 @@ from agentflow.providers import AnthropicProvider, GoogleGenAIProvider, MockLLMP
 from agentflow.session import ArtifactStore, HistoryPersistence, MultiUserHistory, Scratchpad, Session, SessionManager
 from agentflow.orchestration import ComplexityClassifier, DAGExecutor, Plan, PlanStep
 from agentflow.memory import FileMemory, MemoryManager, VectorMemory
-from agentflow.router import DomainRouter, RouterEngine, RoutingResult, RuleEvaluator
-from agentflow.workflow import NodeRunner, WorkflowDAG, WorkflowExecutor
+from agentflow.router import DomainRouter, RouterEngine, RoutingResult, RuleConditionError, RuleEvaluator
+from agentflow.workflow import NodeRunner, WorkflowDAG, WorkflowExecutor, WorkflowNodeError
 
 __all__ = [
     # Types
@@ -123,10 +123,12 @@ __all__ = [
     "RouterEngine",
     "RoutingResult",
     "RuleEvaluator",
+    "RuleConditionError",
     # Workflow
     "NodeRunner",
     "WorkflowDAG",
     "WorkflowExecutor",
+    "WorkflowNodeError",
 ]
 
 def __getattr__(name: str):
@@ -137,4 +139,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'agentflow' has no attribute {name!r}")
 
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"

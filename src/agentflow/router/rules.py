@@ -20,6 +20,17 @@ from typing import Any
 from agentflow.config.schemas import RoutingRule
 
 
+class RuleConditionError(ValueError):
+    """Raised when a rule condition doesn't match any supported syntax.
+
+    Previously an unparseable condition silently evaluated to False and fell
+    through to whatever came next (the next rule, or the router's fallback
+    target) with no indication anything was wrong. That made a typo — or a
+    double-quoted string, since only single quotes were ever supported —
+    indistinguishable from a legitimate non-match.
+    """
+
+
 class RuleEvaluator:
     """
     Evaluates routing rule conditions against a context dict.
@@ -39,13 +50,21 @@ class RuleEvaluator:
     Use separate rules for complex logic.
     """
 
-    # Patterns for different condition types
-    _EQ_PATTERN = re.compile(r"^(\w+)\s*==\s*'([^']*)'$")
-    _NEQ_PATTERN = re.compile(r"^(\w+)\s*!=\s*'([^']*)'$")
+    # Patterns for different condition types. String literals accept either
+    # single or double quotes (but not mixed within one literal).
+    _QUOTED = r"'([^']*)'|\"([^\"]*)\""
+    _EQ_PATTERN = re.compile(rf"^(\w+)\s*==\s*(?:{_QUOTED})$")
+    _NEQ_PATTERN = re.compile(rf"^(\w+)\s*!=\s*(?:{_QUOTED})$")
     _IN_LIST_PATTERN = re.compile(r"^(\w+)\s+in\s+\[([^\]]*)\]$")
-    _CONTAINS_PATTERN = re.compile(r"^'([^']*)'\s+in\s+(\w+)$")
+    _CONTAINS_PATTERN = re.compile(rf"^(?:{_QUOTED})\s+in\s+(\w+)$")
     _BOOL_TRUE_PATTERN = re.compile(r"^(\w+)\s*==\s*true$")
     _BOOL_FALSE_PATTERN = re.compile(r"^(\w+)\s*==\s*false$")
+
+    @staticmethod
+    def _quoted_value(m: re.Match, first_group: int) -> str:
+        """Return whichever of the two alternate quote groups matched."""
+        single, double = m.group(first_group), m.group(first_group + 1)
+        return single if single is not None else double
 
     def evaluate(self, rule: RoutingRule, context: dict[str, Any]) -> bool:
         """Evaluate a single rule's condition against a context dict."""
@@ -114,15 +133,15 @@ class RuleEvaluator:
 
     def _eval_atomic(self, condition: str, context: dict[str, Any]) -> bool:
         """Evaluate a single atomic condition (no or/and)."""
-        # field == 'value'
+        # field == 'value' / field == "value"
         m = self._EQ_PATTERN.match(condition)
         if m:
-            return str(context.get(m.group(1), "")) == m.group(2)
+            return str(context.get(m.group(1), "")) == self._quoted_value(m, 2)
 
-        # field != 'value'
+        # field != 'value' / field != "value"
         m = self._NEQ_PATTERN.match(condition)
         if m:
-            return str(context.get(m.group(1), "")) != m.group(2)
+            return str(context.get(m.group(1), "")) != self._quoted_value(m, 2)
 
         # field in ['a', 'b', 'c']
         m = self._IN_LIST_PATTERN.match(condition)
@@ -131,11 +150,11 @@ class RuleEvaluator:
             items = [s.strip().strip("'\"") for s in m.group(2).split(",")]
             return field_val in items
 
-        # 'substring' in field
+        # 'substring' in field / "substring" in field
         m = self._CONTAINS_PATTERN.match(condition)
         if m:
-            substring = m.group(1).lower()
-            field_val = str(context.get(m.group(2), "")).lower()
+            substring = self._quoted_value(m, 1).lower()
+            field_val = str(context.get(m.group(3), "")).lower()
             return substring in field_val
 
         # field == true
@@ -148,5 +167,7 @@ class RuleEvaluator:
         if m:
             return not bool(context.get(m.group(1)))
 
-        # Unknown condition format — no match
-        return False
+        # Unknown condition format — fail loudly rather than silently
+        # evaluating false and letting the caller fall through to a fallback
+        # target as if this were an ordinary non-match.
+        raise RuleConditionError(f"Unrecognized rule condition syntax: {condition!r}")
