@@ -2,6 +2,44 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.10.0
+
+### Added
+
+- **`NodeOutput.metadata["tool_calls"]` on `AgentExecutor.run()`.** Every tool call made during a
+  run — across all tool-use rounds, on both the normal-completion and exhausted-tool-rounds return
+  paths — is now included as `[{"name": str, "input": dict, "result": str, "is_error": bool}, ...]`.
+  Previously the only way to observe an agent's tool calls was subscribing an `EventBus` to
+  `TOOL_CALLED`/`TOOL_RESULT` before calling `run()`; that's still supported, but callers who just
+  want "what tools did this run use and what did they return" no longer need to set up event
+  plumbing for it.
+- **`onError: abort` on workflow nodes.** By default, a node that raises still doesn't abort its
+  workflow — the failure is captured into that node's `NodeOutput` (`metadata={"error": True}`)
+  and the DAG keeps running, same as before. Set `onError: abort` on a specific node to opt out of
+  that: its exception now propagates out of `WorkflowExecutor.run()` as `WorkflowNodeError`
+  (carrying `.node_id` and `.original`) instead of being swallowed. Applies uniformly across
+  `sync`, `parallel`, `async`, and `foreach` nodes.
+
+### Fixed
+
+- **`mode: async` now actually does what the docs always said it did.** Nodes marked `mode: async`
+  were accepted by the workflow schema but silently executed identically to `sync` — only
+  `parallel` was ever branched on in `WorkflowExecutor`. Async nodes are now genuinely
+  fire-and-forget: dispatched without the wave loop waiting on them, so a sibling with no
+  dependency on the async node doesn't get blocked behind it. `WorkflowExecutor.run()` still waits
+  for and captures every async node's result (or error) before returning, so nothing is silently
+  dropped even when nothing in the DAG depends on it.
+- **`WorkflowNode.mode` and the new `onError` field are now validated.** A typo like
+  `mode: asnyc` used to be silently accepted and treated as `sync`; it's now a `ValueError` at
+  config-parse time. Same for an unrecognized `onError` value.
+- **`RuleEvaluator` conditions fail loudly on unrecognized syntax instead of silently evaluating
+  false.** A condition matching none of the supported patterns — e.g. a typo, or (previously)
+  a double-quoted string literal — used to return `False` and let the caller fall through to the
+  next rule or the router's fallback target, indistinguishable from a legitimate non-match. It now
+  raises `RuleConditionError`. Also: string literals accept double quotes as well as single quotes
+  (`area == "schematic"`, not just `area == 'schematic'`) — previously only single quotes worked
+  for `==`, `!=`, and `'substring' in field`; `field in [...]` already accepted either.
+
 ## 0.9.0
 
 ### Changed

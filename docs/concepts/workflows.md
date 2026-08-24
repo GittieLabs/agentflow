@@ -52,7 +52,8 @@ Research pipeline with parallel processing.
 | `agent` | `str` | *required\** | Name of the agent to execute |
 | `handler` | `str` | `null` | Registered Python function name (alternative to `agent`) |
 | `next` | `str \| list[str] \| null` | `null` | Downstream node(s) |
-| `mode` | `str` | `"sync"` | Execution mode |
+| `mode` | `str` | `"sync"` | Execution mode: `sync`, `parallel`, `async` |
+| `onError` | `str` | `"continue"` | Failure handling: `continue`, `abort` |
 | `inputs` | `dict[str, str]` | `{}` | Input mappings from upstream outputs |
 | `foreach` | `str` | `null` | Dotted ref to a list artifact — runs the node once per item |
 
@@ -111,6 +112,40 @@ nodes:
   - id: continue
     agent: next_worker
 ```
+
+`continue` doesn't wait for `notify` — only for `main_task`, its actual
+dependency. `run()` still waits for `notify` to finish (and captures its
+result and any error) before returning, even though nothing in the DAG
+depends on it; it just doesn't block sibling nodes along the way.
+
+## Error Handling
+
+By default, a node that raises doesn't abort the workflow — its failure is
+captured into that node's own `NodeOutput` (`text` describing the error,
+`metadata={"error": True}`) and the rest of the DAG keeps running. This is
+what lets a pipeline degrade gracefully instead of an unrelated node's bug
+taking down an otherwise-successful run. It also means a downstream handler
+reading a node's output needs to check `metadata.get("error")` rather than
+assuming a result implies success.
+
+Set `onError: abort` on a specific node to opt out of that for failures that
+should actually stop the workflow:
+
+```yaml
+nodes:
+  - id: validate_input
+    agent: validator
+    onError: abort
+  - id: process
+    agent: worker
+```
+
+When `validate_input` raises, `WorkflowExecutor.run()` raises
+`WorkflowNodeError` instead of returning — `process` never runs. The
+original exception is available as `WorkflowNodeError.original` (also set
+as `__cause__`), and `WorkflowNodeError.node_id` names the node that failed.
+This applies uniformly across `sync`, `parallel`, `async`, and `foreach`
+nodes.
 
 ## Input Mappings
 

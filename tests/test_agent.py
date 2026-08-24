@@ -76,6 +76,7 @@ async def test_executor_simple_chat():
     assert result.text == "Hello! I'm a test agent."
     assert result.agent_id == "test"
     assert len(mock_llm.calls) == 1
+    assert result.metadata.get("tool_calls") == []
 
 
 @pytest.mark.asyncio
@@ -97,8 +98,8 @@ async def test_executor_with_tool_use():
         ),
     ])
 
-    # Mock tool dispatcher
-    async def mock_dispatch(tool_name, tool_input):
+    # Mock tool dispatcher — inline handlers are invoked as handler(**tool_input)
+    async def mock_dispatch(query):
         return "Current weather: sunny, 72F"
 
     tools = ToolRegistry()
@@ -110,6 +111,62 @@ async def test_executor_with_tool_use():
     assert result.text == "It's sunny today!"
     assert len(mock_llm.calls) == 2  # Initial call + after tool result
     assert result.metadata.get("rounds") == 2
+    assert result.metadata.get("tool_calls") == [
+        {
+            "name": "web_search",
+            "input": {"query": "weather"},
+            "result": "Current weather: sunny, 72F",
+            "is_error": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_executor_tool_calls_metadata_includes_errors():
+    """A failing tool call is still recorded in metadata['tool_calls'], flagged as an error."""
+    config = AgentConfig(name="test", max_tool_rounds=6)
+
+    mock_llm = MockLLMProvider([
+        AgentResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="tc_1", name="web_search", input={"query": "weather"}),
+                ToolCall(id="tc_2", name="broken_tool", input={}),
+            ],
+            stop_reason="tool_use",
+        ),
+        AgentResponse(text="Done.", stop_reason="end_turn"),
+    ])
+
+    async def mock_dispatch(query):
+        return "Current weather: sunny, 72F"
+
+    async def broken_dispatch():
+        raise RuntimeError("boom")
+
+    tools = ToolRegistry()
+    tools.add_tool("web_search", mock_dispatch)
+    tools.add_tool("broken_tool", broken_dispatch)
+
+    executor = AgentExecutor(config=config, prompt_body="You are helpful.", llm=mock_llm, tools=tools)
+    result = await executor.run(message="What's the weather?")
+
+    assert result.text == "Done."
+    tool_calls = result.metadata.get("tool_calls")
+    assert tool_calls == [
+        {
+            "name": "web_search",
+            "input": {"query": "weather"},
+            "result": "Current weather: sunny, 72F",
+            "is_error": False,
+        },
+        {
+            "name": "broken_tool",
+            "input": {},
+            "result": "Tool error: boom",
+            "is_error": True,
+        },
+    ]
 
 
 @pytest.mark.asyncio
@@ -131,7 +188,7 @@ async def test_executor_exhausted_rounds():
         ),
     ])
 
-    async def mock_dispatch(tool_name, tool_input):
+    async def mock_dispatch():
         return "result"
 
     tools = ToolRegistry()
@@ -141,6 +198,10 @@ async def test_executor_exhausted_rounds():
     result = await executor.run(message="loop")
 
     assert result.metadata.get("exhausted_rounds") is True
+    assert result.metadata.get("tool_calls") == [
+        {"name": "search", "input": {}, "result": "result", "is_error": False},
+        {"name": "search", "input": {}, "result": "result", "is_error": False},
+    ]
 
 
 @pytest.mark.asyncio

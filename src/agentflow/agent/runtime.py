@@ -99,6 +99,7 @@ class AgentExecutor:
             tool_defs = None
 
         # Tool-use loop
+        tool_calls_log: list[dict[str, Any]] = []
         for round_num in range(self._config.max_tool_rounds):
             t0 = time.monotonic()
             if self._events:
@@ -191,6 +192,12 @@ class AgentExecutor:
                         content=result_str,
                         is_error=is_error,
                     ))
+                    tool_calls_log.append({
+                        "name": tc.name,
+                        "input": tc.input,
+                        "result": result_str,
+                        "is_error": is_error,
+                    })
 
                     if self._events:
                         raw = last_raw_tool_result.get()
@@ -217,7 +224,7 @@ class AgentExecutor:
                 node_id=node_id or "default",
                 agent_id=self._config.name,
                 text=response.text,
-                metadata={"usage": response.usage, "rounds": round_num + 1},
+                metadata={"usage": response.usage, "rounds": round_num + 1, "tool_calls": tool_calls_log},
             )
 
         # Exhausted tool rounds — return accumulated tool results instead of an error
@@ -233,5 +240,5 @@ class AgentExecutor:
             node_id=node_id or "default",
             agent_id=self._config.name,
             text=fallback_text,
-            metadata={"exhausted_rounds": True},
+            metadata={"exhausted_rounds": True, "tool_calls": tool_calls_log},
         )

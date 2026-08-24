@@ -108,6 +108,7 @@ Workflow files define a DAG of agent nodes.
 | `agent` | `str` | *required* | Agent name to execute |
 | `next` | `str \| list[str] \| null` | `null` | Next node(s) to execute |
 | `mode` | `str` | `"sync"` | Execution mode: `sync`, `parallel`, `async` |
+| `onError` | `str` | `"continue"` | Failure handling: `continue`, `abort` |
 | `inputs` | `dict[str, str]` | `{}` | Input mappings from previous node outputs |
 
 ### Example
