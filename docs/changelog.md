@@ -2,6 +2,26 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.11.1
+
+### Fixed
+
+- **`temperature` is no longer sent to Anthropic SDKs that removed it.** The `anthropic` 1.x line
+  dropped `temperature` from `messages.create`. Sending it raises a plain `TypeError`
+  **client-side, before any network call**, which the existing `BadRequestError` retry cannot
+  catch -- so **every** chat with a non-1.0 temperature failed outright against `anthropic>=1.0`.
+  Since `AgentConfig.temperature` defaults to `0.7`, that was most calls.
+
+  The provider now checks whether the installed SDK's `messages.create` accepts `temperature` and
+  omits it when it does not. Resolved by introspection rather than a version comparison: the
+  parameter's presence is what actually matters, and a version check would need updating for every
+  future SDK release -- the same trap the model-name suffix convention fell into. When the callable
+  cannot be introspected it is treated as accepting `temperature`, so an unreadable SDK behaves
+  exactly as it did before rather than silently dropping a caller's parameter.
+
+  Found while diagnosing a downstream suite that passed only because it ran against an older SDK on
+  a different interpreter -- the failure was invisible on `anthropic` 0.121.0 and total on 1.2.0.
+
 ## 0.11.0
 
 ### Added
