@@ -146,3 +146,70 @@ class TestRuntimePassesParams:
         await executor.run(message="hello")
 
         assert llm.calls[0]["params"] is None
+
+
+class TestAnthropicTemperatureCompatibility:
+    """anthropic>=1.0 removed `temperature` from `messages.create`. Sending it
+    raises TypeError client-side, before any network call, which the
+    BadRequestError retry cannot catch -- so every chat with a non-1.0
+    temperature failed outright. Found 2026-09-01 while diagnosing a suite
+    that passed only because it ran against an older SDK on a different
+    interpreter.
+    """
+
+    def test_signature_without_temperature_is_detected(self):
+        from agentflow.providers.anthropic import _accepts_temperature
+
+        def new_sdk(*, model, max_tokens, messages, system=None, tools=None,
+                    thinking=None, output_config=None):
+            ...
+
+        assert _accepts_temperature(new_sdk) is False
+
+    def test_signature_with_temperature_is_detected(self):
+        from agentflow.providers.anthropic import _accepts_temperature
+
+        def old_sdk(*, model, max_tokens, messages, temperature=0.7):
+            ...
+
+        assert _accepts_temperature(old_sdk) is True
+
+    def test_a_kwargs_callable_counts_as_accepting_it(self):
+        """A callable taking **kwargs accepts anything. Reading it as a new
+        SDK would quietly drop the caller's temperature -- and it is what
+        every test double and blind-forwarding wrapper looks like."""
+        from agentflow.providers.anthropic import _accepts_temperature
+
+        def forwards_everything(**kwargs):
+            ...
+
+        assert _accepts_temperature(forwards_everything) is True
+
+    def test_an_uninspectable_callable_keeps_the_old_behaviour(self):
+        """Returning True when it cannot tell means an SDK this cannot read
+        behaves exactly as it did before, rather than silently dropping a
+        parameter the caller asked for."""
+        from agentflow.providers.anthropic import _accepts_temperature
+
+        assert _accepts_temperature(object()) is True
+
+    @pytest.mark.asyncio
+    async def test_temperature_is_omitted_when_the_sdk_rejects_it(self):
+        from agentflow.providers.anthropic import AnthropicProvider
+
+        with patch("agentflow.providers.anthropic.anthropic") as mod:
+            client = AsyncMock()
+            mod.AsyncAnthropic.return_value = client
+            provider = AnthropicProvider(api_key="k", model="claude-sonnet-5")
+
+        async def new_sdk_create(*, model, max_tokens, messages, system=None, tools=None):
+            return MagicMock(
+                content=[MagicMock(type="text", text="ok")],
+                stop_reason="end_turn", usage=MagicMock(input_tokens=1, output_tokens=1),
+                model="claude-sonnet-5",
+            )
+
+        client.messages.create = new_sdk_create
+        # The bug: this raised TypeError before reaching the network.
+        result = await provider.chat([Message(role=Role.USER, content="Hi")], temperature=0.2)
+        assert result.text == "ok"

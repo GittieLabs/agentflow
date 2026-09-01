@@ -7,6 +7,7 @@ message format, including tool use.
 from __future__ import annotations
 
 import logging
+import inspect
 from typing import Any
 
 from agentflow.providers._params import merge_params
@@ -32,6 +33,38 @@ except ImportError:
 # openai_compat -- so the same request meant different things depending
 # on which provider served it. Effort now arrives through `params`,
 # where the caller states it explicitly.
+def _accepts_temperature(create_method) -> bool:
+    """Whether the installed anthropic SDK's `messages.create` still takes
+    `temperature`.
+
+    The SDK removed it in the 1.x line. Sending it there raises a plain
+    `TypeError` **client-side, before any network call**, which the
+    BadRequestError retry below cannot catch -- so every chat with a
+    non-1.0 temperature failed outright against anthropic>=1.0.
+
+    Resolved by introspection rather than a version comparison: the
+    parameter's presence is the thing that actually matters, and a version
+    check would need updating for every future SDK release, which is the
+    same trap the model-suffix convention fell into. Verified to match
+    runtime behaviour exactly -- the TypeError is raised by Python's own
+    argument binding, which is what `signature` describes.
+
+    Returns True when it cannot tell, so an SDK this cannot introspect
+    behaves as it did before rather than silently dropping a parameter.
+    A callable taking `**kwargs` accepts anything, so it counts as
+    accepting `temperature` -- that covers test doubles and any wrapper
+    that forwards blindly, both of which would otherwise be misread as a
+    new SDK and quietly lose the parameter.
+    """
+    try:
+        params = inspect.signature(create_method).parameters
+    except (TypeError, ValueError):
+        return True
+    if "temperature" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 class AnthropicProvider:
     """LLMProvider implementation for Anthropic Claude models."""
 
@@ -78,7 +111,11 @@ class AnthropicProvider:
         # `params` therefore must not also be sent a temperature, so this
         # decision is made from `params` rather than from a decorated model.
         wants_thinking = bool(params) and "thinking" in params
-        if temperature != 1.0 and not wants_thinking:
+        if (
+            temperature != 1.0
+            and not wants_thinking
+            and _accepts_temperature(self._client.messages.create)
+        ):
             kwargs["temperature"] = temperature
 
         merge_params(kwargs, params, provider="anthropic")
