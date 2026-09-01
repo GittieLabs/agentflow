@@ -72,12 +72,16 @@ Two rules are worth knowing:
   offending key. `params` changes *how* a call is made, never *what* is asked -- so it cannot
   rewrite `model`, `messages`, `system` or `tools`. Set those where they belong.
 
-!!! warning "Changed in 0.11.0"
+!!! danger "Breaking change in 0.11.0"
     Earlier versions selected Anthropic and Gemini reasoning effort by appending `-low`,
-    `-medium` or `-high` to the **model name**, parsed with `rsplit("-", 1)`. That convention is
-    removed. It silently truncated any legitimate model whose real name ended in one of those
-    words, was invisible to callers, and had no equivalent on `openai_compat`. Move any such model
-    name back to its real value and pass the effort through `params` instead.
+    `-medium` or `-high` to the **model name**, parsed with `rsplit("-", 1)`. **That convention is
+    removed.** It silently truncated any legitimate model whose real name ended in one of those
+    words, was invisible to callers, and had no equivalent on `openai_compat` — so identical
+    configuration produced different requests depending on which provider served it.
+
+    If any agent's `model` ends in `-low`, `-medium` or `-high`, its behaviour changes on upgrade.
+    **[Upgrading to 0.11.0](../guides/upgrading-to-0-11.md)** is the full migration, with before
+    and after for both providers.
 
 ## Provider Setup
 
