@@ -2,6 +2,57 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.11.0
+
+### Added
+
+- **`params` on `LLMProvider.chat()`** -- a dict forwarded **verbatim** to the underlying vendor
+  SDK call, implemented on all three real providers plus `MockLLMProvider`. Vendors add parameters
+  faster than any framework can name them, and predicting which model supports which is not a
+  problem AgentFlow can win. The caller chooses and owns correctness: a parameter a model ignores
+  is the caller's business, not an AgentFlow error.
+
+  ```python
+  await provider.chat(messages, params={"reasoning_effort": "high"})
+  ```
+
+- **`AgentConfig.params`** -- the same dict, declarable per agent in `*.prompt.md` front matter and
+  forwarded by `AgentExecutor`. Declared at the agent level because that is where the model is
+  chosen, so a parameter and the model it applies to stay together.
+
+- **A reserved-key refusal.** `params` may not contain a key AgentFlow itself sets -- `model`,
+  `messages`, `system`, `tools` and friends. Those change *what* is asked rather than *how*, and a
+  passthrough that could silently redirect a call to a different model is worse than no passthrough.
+  `ValueError` names every offending key at once rather than only the first. Bare `**kwargs` was
+  considered and rejected for exactly this: it makes a misspelled known argument stop being an
+  error and quietly become a vendor argument.
+
+### Removed
+
+- **BREAKING: the `-low`/`-medium`/`-high` model-name suffix convention.** Anthropic and Gemini
+  reasoning effort was previously selected by decorating the model name and parsing it back off
+  with `rsplit("-", 1)`. That is gone. It silently truncated any legitimate model whose real name
+  ended in one of those three words and misread the tail as an effort level, with nothing in the
+  response to say so; it was invisible to callers; and it had no equivalent on `openai_compat`, so
+  the same request meant different things depending on which provider served it.
+
+  **Migration:** restore the model name to its real value and pass the effort through `params`.
+
+  ```python
+  # before
+  AgentConfig(name="a", model="claude-sonnet-5-high")
+
+  # after
+  AgentConfig(
+      name="a",
+      model="claude-sonnet-5",
+      params={"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}},
+  )
+  ```
+
+  Anthropic's rule that `temperature` must be absent whenever thinking is active is preserved, and
+  now keys off `params` rather than off a parsed model name.
+
 ## 0.10.0
 
 ### Added

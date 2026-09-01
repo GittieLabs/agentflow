@@ -954,22 +954,60 @@ class TestAnthropicProvider:
         assert "output_config" not in kwargs
 
     @pytest.mark.asyncio
-    async def test_chat_thinking_suffix_uses_adaptive_effort_not_temperature(self):
-        """`claude-sonnet-5-medium` selects adaptive thinking with
-        effort='medium' against the real `claude-sonnet-5` model, and
-        temperature is never sent -- required whenever thinking is
-        active, not merely set to 1."""
-        provider, mock_client = self._make_provider(model="claude-sonnet-5-medium")
+    async def test_chat_params_carry_adaptive_effort_and_suppress_temperature(self):
+        """0.11.0: adaptive thinking is requested through `params`, not by
+        decorating the model name. Temperature must still be absent whenever
+        thinking is active -- Anthropic rejects it outright, and that rule now
+        keys off `params` rather than off a parsed model suffix."""
+        provider, mock_client = self._make_provider(model="claude-sonnet-5")
         mock_client.messages.create = AsyncMock(return_value=self._mock_response())
 
         messages = [Message(role=Role.USER, content="Hi")]
-        await provider.chat(messages, temperature=0.9)
+        await provider.chat(
+            messages,
+            temperature=0.9,
+            params={"thinking": {"type": "adaptive"}, "output_config": {"effort": "medium"}},
+        )
 
         _, kwargs = mock_client.messages.create.call_args
         assert kwargs["model"] == "claude-sonnet-5"
         assert kwargs["thinking"] == {"type": "adaptive"}
         assert kwargs["output_config"] == {"effort": "medium"}
         assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_model_name_ending_in_high_is_no_longer_mangled(self):
+        """The regression the suffix convention guaranteed. `rsplit("-", 1)`
+        truncated ANY model whose real name ended in -low/-medium/-high, and
+        misread the tail as an effort level, with nothing in the response to
+        say so. The model name must now reach the vendor exactly as given."""
+        provider, mock_client = self._make_provider(model="some-future-model-high")
+        mock_client.messages.create = AsyncMock(return_value=self._mock_response())
+
+        await provider.chat([Message(role=Role.USER, content="Hi")], temperature=0.5)
+
+        _, kwargs = mock_client.messages.create.call_args
+        assert kwargs["model"] == "some-future-model-high"
+        assert "output_config" not in kwargs
+        assert "thinking" not in kwargs
+        assert kwargs["temperature"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_params_may_not_override_agentflow_s_own_arguments(self):
+        """A passthrough that could rewrite `model` or `messages` would change
+        WHAT is asked rather than HOW, with nothing in the response to show
+        it. Refused loudly, naming every offending key at once."""
+        provider, mock_client = self._make_provider(model="claude-sonnet-5")
+        mock_client.messages.create = AsyncMock(return_value=self._mock_response())
+
+        with pytest.raises(ValueError) as excinfo:
+            await provider.chat(
+                [Message(role=Role.USER, content="Hi")],
+                params={"model": "something-else", "messages": []},
+            )
+        assert "model" in str(excinfo.value)
+        assert "messages" in str(excinfo.value)
+        mock_client.messages.create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_chat_bare_model_retries_without_temperature_on_deprecation_error(self):

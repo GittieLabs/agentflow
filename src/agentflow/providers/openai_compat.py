@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agentflow.providers._params import merge_params
 from agentflow.types import AgentResponse, Message, Role, ToolCall
 
 logger = logging.getLogger("agentflow.providers.openai_compat")
@@ -56,8 +57,18 @@ class OpenAICompatProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        params: dict[str, Any] | None = None,
     ) -> AgentResponse:
-        """Send messages and return an AgentResponse."""
+        """Send messages and return an AgentResponse.
+
+        `params` is forwarded verbatim to `chat.completions.create`, which is
+        how reasoning effort reaches OpenAI -- e.g.
+        `params={"reasoning_effort": "high"}`. Note this provider serves any
+        OpenAI-compatible server, and a local Ollama or a Perplexity endpoint
+        need not honour an OpenAI-specific parameter; a silently ignored
+        parameter is the caller's business, per the module docstring in
+        `_params`.
+        """
         api_messages = self._to_api_messages(messages, system)
 
         kwargs: dict[str, Any] = {
@@ -69,6 +80,8 @@ class OpenAICompatProvider:
 
         if tools:
             kwargs["tools"] = self._to_api_tools(tools)
+
+        merge_params(kwargs, params, provider="openai_compat")
 
         response = await self._client.chat.completions.create(**kwargs)
         return self._from_api_response(response)

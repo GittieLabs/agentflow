@@ -15,6 +15,17 @@ from agentflow.types import AgentResponse, Message
 class LLMProvider(Protocol):
     """Contract for LLM backends (Anthropic, OpenAI, Google, etc.)."""
 
+    # `params` is forwarded verbatim to the underlying vendor SDK call.
+    #
+    # It exists because vendors add parameters faster than any framework can
+    # name them -- reasoning effort, thinking budgets, and whatever comes
+    # next -- and predicting which model supports which is not a problem
+    # AgentFlow can win. The caller chooses and owns correctness.
+    #
+    # A key AgentFlow itself sets is REFUSED rather than merged, so a
+    # passthrough can never silently redirect a call to a different model or
+    # a different conversation. Each provider raises ValueError naming the
+    # offending key; see `_merge_params`.
     async def chat(
         self,
         messages: list[Message],
@@ -22,6 +33,7 @@ class LLMProvider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        params: dict[str, Any] | None = None,
     ) -> AgentResponse: ...
 
 

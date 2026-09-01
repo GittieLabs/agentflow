@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agentflow.providers._params import merge_params
 from agentflow.types import AgentResponse, Message, Role, ToolCall
 
 logger = logging.getLogger("agentflow.providers.anthropic")
@@ -20,15 +21,17 @@ except ImportError:
 
 
 # Anthropic's newest reasoning model lines (first hit: claude-sonnet-5)
-# reject `temperature` outright once thinking is active and use a newer
-# adaptive-thinking + effort interface instead of the older, fixed
-# `budget_tokens` one. Selected via a `-low`/`-medium`/`-high` model-name
-# suffix -- mirroring GoogleGenAIProvider's identical convention for
-# Gemini thinking models exactly, one pattern across providers instead
-# of two different ones.
-_THINKING_EFFORT_SUFFIXES = ("-low", "-medium", "-high")
-
-
+# reject `temperature` outright once thinking is active, and use an
+# adaptive-thinking + effort interface rather than the older fixed
+# `budget_tokens` one.
+#
+# Until 0.11.0 that was selected by a `-low`/`-medium`/`-high` model-name
+# suffix, parsed with `rsplit("-", 1)`. That was removed: it silently
+# truncated any legitimate model whose real name ended in one of those
+# words, was invisible to callers, and had no equivalent on
+# openai_compat -- so the same request meant different things depending
+# on which provider served it. Effort now arrives through `params`,
+# where the caller states it explicitly.
 class AnthropicProvider:
     """LLMProvider implementation for Anthropic Claude models."""
 
@@ -49,17 +52,19 @@ class AnthropicProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        params: dict[str, Any] | None = None,
     ) -> AgentResponse:
-        """Send messages to Claude and return an AgentResponse."""
+        """Send messages to Claude and return an AgentResponse.
+
+        `params` is forwarded verbatim to `messages.create`. Reasoning effort
+        is set this way -- e.g. `params={"thinking": {"type": "adaptive"},
+        "output_config": {"effort": "high"}}` -- rather than by decorating the
+        model name, which 0.11.0 removed (see the module changelog entry).
+        """
         api_messages = self._to_api_messages(messages)
 
-        model = self._model
-        effort = None
-        if model.endswith(_THINKING_EFFORT_SUFFIXES):
-            model, effort = model.rsplit("-", 1)
-
         kwargs: dict[str, Any] = {
-            "model": model,
+            "model": self._model,
             "max_tokens": max_tokens,
             "messages": api_messages,
         }
@@ -67,13 +72,16 @@ class AnthropicProvider:
             kwargs["system"] = system
         if tools:
             kwargs["tools"] = tools
-        if effort:
-            # Adaptive thinking requires temperature to be entirely absent
-            # from the request, not merely set to 1.
-            kwargs["thinking"] = {"type": "adaptive"}
-            kwargs["output_config"] = {"effort": effort}
-        elif temperature != 1.0:
+
+        # Adaptive thinking requires temperature to be entirely absent from
+        # the request, not merely set to 1. A caller enabling it through
+        # `params` therefore must not also be sent a temperature, so this
+        # decision is made from `params` rather than from a decorated model.
+        wants_thinking = bool(params) and "thinking" in params
+        if temperature != 1.0 and not wants_thinking:
             kwargs["temperature"] = temperature
+
+        merge_params(kwargs, params, provider="anthropic")
 
         try:
             response = await self._client.messages.create(**kwargs)

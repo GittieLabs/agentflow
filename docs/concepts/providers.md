@@ -24,10 +24,60 @@ class LLMProvider(Protocol):
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        params: dict[str, Any] | None = None,
     ) -> AgentResponse: ...
 ```
 
 This means you can use any object with a matching `chat` method as a provider -- no subclassing needed.
+
+## Vendor Parameters (`params`)
+
+Vendors add parameters faster than any framework can name them -- reasoning effort, thinking
+budgets, and whatever ships next. AgentFlow does not model which parameter each model supports,
+because that cannot be kept current. Instead `params` is forwarded **verbatim** to the underlying
+SDK call, and the caller owns correctness.
+
+```python
+# Anthropic: adaptive thinking with an effort level
+await provider.chat(messages, params={
+    "thinking": {"type": "adaptive"},
+    "output_config": {"effort": "high"},
+})
+
+# OpenAI and compatible servers
+await provider.chat(messages, params={"reasoning_effort": "high"})
+
+# Gemini -- merged into GenerateContentConfig
+await provider.chat(messages, params={"thinking_config": {"thinking_level": "high"}})
+```
+
+Per agent, declare them in front matter:
+
+```yaml
+---
+name: board_advisor
+model: claude-sonnet-5
+params:
+  thinking: {type: adaptive}
+  output_config: {effort: high}
+---
+```
+
+Two rules are worth knowing:
+
+- **A parameter the model ignores is your business, not an error.** An OpenAI-compatible endpoint
+  such as a local Ollama will happily accept `reasoning_effort` and do nothing with it. AgentFlow
+  does not try to predict that.
+- **A parameter that would override AgentFlow's own arguments is refused**, loudly, naming every
+  offending key. `params` changes *how* a call is made, never *what* is asked -- so it cannot
+  rewrite `model`, `messages`, `system` or `tools`. Set those where they belong.
+
+!!! warning "Changed in 0.11.0"
+    Earlier versions selected Anthropic and Gemini reasoning effort by appending `-low`,
+    `-medium` or `-high` to the **model name**, parsed with `rsplit("-", 1)`. That convention is
+    removed. It silently truncated any legitimate model whose real name ended in one of those
+    words, was invisible to callers, and had no equivalent on `openai_compat`. Move any such model
+    name back to its real value and pass the effort through `params` instead.
 
 ## Provider Setup
 
