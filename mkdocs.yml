@@ -73,6 +73,7 @@ nav:
       - Multi-Agent Pipeline: guides/multi-agent-pipeline.md
       - Foreach Workflow (Resumes): guides/foreach-workflow.md
       - Custom LLM Provider: guides/custom-provider.md
+      - Upgrading to 0.11.0: guides/upgrading-to-0-11.md
       - Domain Routing: guides/domain-routing.md
   - API Reference:
       - Overview: api/index.md
