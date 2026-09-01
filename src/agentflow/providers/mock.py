@@ -30,12 +30,14 @@ class MockLLMProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        params: dict[str, Any] | None = None,
     ) -> AgentResponse:
         """Return the next scripted response."""
         self.calls.append({
             "messages": messages,
             "system": system,
             "tools": tools,
+            "params": params,
             "max_tokens": max_tokens,
             "temperature": temperature,
         })

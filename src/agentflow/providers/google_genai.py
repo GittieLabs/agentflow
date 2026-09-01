@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from agentflow.providers._params import merge_params
 from agentflow.types import AgentResponse, Message, Role, ToolCall
 
 logger = logging.getLogger("agentflow.providers.google_genai")
@@ -52,24 +53,27 @@ class GoogleGenAIProvider:
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        params: dict[str, Any] | None = None,
     ) -> AgentResponse:
-        """Send messages to Gemini and return an AgentResponse."""
+        """Send messages to Gemini and return an AgentResponse.
+
+        `params` is forwarded verbatim into `GenerateContentConfig`, which is
+        how thinking level reaches Gemini -- e.g.
+        `params={"thinking_config": {"thinking_level": "high"}}` -- rather
+        than by decorating the model name, which 0.11.0 removed.
+        """
         contents = self._to_api_contents(messages)
 
-        # Enable Gemini 3.1 Pro Thinking Config if suffix is present
-        thinking_level = None
         current_model = self._model
-        if current_model.endswith(('-low', '-medium', '-high')):
-            parts = current_model.rsplit('-', 1)
-            current_model = parts[0]
-            thinking_level = parts[1]
 
         config_kwargs: dict[str, Any] = {
             "max_output_tokens": max_tokens,
             "temperature": temperature,
         }
-        if thinking_level:
-            config_kwargs["thinking_config"] = {"thinking_level": thinking_level}
+        # Thinking level and anything else vendor-specific arrives through
+        # `params` and lands inside GenerateContentConfig, where Gemini's own
+        # SDK expects it.
+        merge_params(config_kwargs, params, provider="google_genai")
         if system:
             config_kwargs["system_instruction"] = system
 

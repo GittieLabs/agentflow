@@ -6,6 +6,8 @@ has a corresponding schema that validates and types the front-matter.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -33,6 +35,12 @@ class AgentConfig(BaseModel):
     tools: list[str] = Field(default_factory=list)
     tool_definitions: list[ToolDefinition] = Field(default_factory=list)
     context_files: list[str] = Field(default_factory=list)
+    # Vendor arguments forwarded verbatim to the provider's SDK call, for
+    # anything AgentFlow does not name itself -- reasoning effort, thinking
+    # budgets, and whatever a vendor ships next. Declared per agent because
+    # that is the level at which a model is chosen, so the parameter and the
+    # model it applies to stay together. See providers/_params.py.
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 # ── Router config (router.prompt.md) ──────────────────────────────────────────

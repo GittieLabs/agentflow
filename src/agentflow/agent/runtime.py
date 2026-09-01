@@ -117,6 +117,7 @@ class AgentExecutor:
                 tools=tool_defs,
                 max_tokens=self._config.max_tokens,
                 temperature=self._config.temperature,
+                params=self._config.params or None,
             )
 
             elapsed_ms = int((time.monotonic() - t0) * 1000)
