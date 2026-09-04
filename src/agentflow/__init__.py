@@ -48,6 +48,7 @@ from agentflow.orchestration import ComplexityClassifier, DAGExecutor, Plan, Pla
 from agentflow.memory import FileMemory, MemoryManager, VectorMemory
 from agentflow.router import DomainRouter, RouterEngine, RoutingResult, RuleConditionError, RuleEvaluator
 from agentflow.workflow import NodeRunner, WorkflowDAG, WorkflowExecutor, WorkflowNodeError
+from agentflow.parsing import JSONResponseError, parse_json_response
 
 __all__ = [
     # Types
@@ -129,6 +130,9 @@ __all__ = [
     "WorkflowDAG",
     "WorkflowExecutor",
     "WorkflowNodeError",
+    # Parsing
+    "JSONResponseError",
+    "parse_json_response",
 ]
 
 def __getattr__(name: str):
@@ -139,4 +143,4 @@ def __getattr__(name: str):
     raise AttributeError(f"module 'agentflow' has no attribute {name!r}")
 
 
-__version__ = "0.11.1"
+__version__ = "0.12.0"

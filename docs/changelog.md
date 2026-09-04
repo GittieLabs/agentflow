@@ -2,6 +2,49 @@
 
 All notable changes to AgentFlow are documented here.
 
+## 0.12.0
+
+### Added
+
+- **`parse_json_response()`** -- reads the JSON value out of a model response that was supposed to
+  be JSON and very nearly is. A model told to "return a JSON array and nothing else" complies
+  almost every time; the remainder is not random noise but a small set of recognisable shapes, and
+  a caller doing plain `json.loads` fails on all of them:
+
+    - the value wrapped in a markdown fence, despite being asked not to
+    - a sentence of preamble before it, or a summary after it
+    - a **self-correction** -- a malformed first attempt, a line of prose noticing the mistake, and
+      then the correct value
+
+  The last of those is what prompted this. Captured verbatim from a live extraction run against a
+  real datasheet:
+
+  ```
+  ["Figure 13-1 shows a typical application circuit...","page":8]
+
+  Wait, must output JSON array only.
+
+  [{"quote":"Figure 13-1 shows a typical application circuit...","page":8}]
+  ```
+
+  The correct answer is right there and `json.loads` cannot reach it. Where several candidates
+  parse, the **last** one wins, because that is the direction a self-correcting model moves in --
+  it writes forwards and does not revise what it has already written.
+
+  An optional `expect=` type (typically `list`) skips candidates of the wrong type, so a schema
+  example in a model's preamble cannot stand in for the array that follows it.
+
+  **Invalid JSON is never repaired.** A response with a brace missing raises rather than being
+  patched into something plausible; recovering from that belongs to the caller, which can retry the
+  call. Relatedly, a **truncated** array fails rather than returning the complete objects that
+  survived inside it -- returning those would hand back a plausible short result with no sign that
+  anything was lost, which for extracted citations is the worst available outcome.
+
+- **`JSONResponseError`**, raised by the above, carrying the offending response as `response_text`.
+  `json.JSONDecodeError` on its own reports something like `Expecting ',' delimiter: line 1 column
+  9` -- which tells you a response was malformed and nothing whatsoever about how. These failures
+  are intermittent, so there is frequently no second chance to look.
+
 ## 0.11.1
 
 ### Fixed
