@@ -243,3 +243,28 @@ Observability integrations. Defined in `agentflow.telemetry`.
 
 !!! note "Lazy Import"
     `LangfuseEventHandler` is lazily imported to avoid requiring the `langfuse` package at module load time. It is only loaded when accessed.
+
+## Parsing
+
+Reading structured output back out of a model response. Defined in `agentflow.parsing`.
+
+| Name | Description |
+|------|-------------|
+| `parse_json_response` | The JSON value in a model response, tolerating fences, surrounding prose, and self-corrections |
+| `JSONResponseError` | Raised when no JSON value can be found, carrying the response as `response_text` |
+
+```python
+from agentflow import parse_json_response
+
+items = parse_json_response(response.content, expect=list)
+```
+
+`expect` is optional and skips candidates of the wrong type, so a schema example in a model's
+preamble cannot stand in for the array that follows it. Where several candidates parse, the last
+one wins — a self-correcting model writes its correction after the attempt it corrects.
+
+!!! warning "Invalid JSON is never repaired"
+    A response with a brace missing raises rather than being patched into something plausible.
+    A **truncated** array raises too, rather than returning the complete objects that survived
+    inside it — returning those would hand back a plausible short result with no sign that
+    anything was lost. Recovery belongs to the caller, which can retry the model call.
